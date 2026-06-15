@@ -206,8 +206,8 @@ $$
 $$
 \begin{aligned}
 \max_\pi \mathbb E_y[r] - \beta\mathrm{KL}(\pi\|\pi_{\text{ref}})
-&= \max_\pi \mathbb E_y\!\left[r(x,y)-\beta\log\frac{\pi(y\mid x)}{\pi_{\text{ref}}(y\mid x)}\right] \\
-&= \min_\pi \mathbb E_y\!\left[\log\frac{\pi(y\mid x)}{\pi_{\text{ref}}(y\mid x)}-\frac1\beta r(x,y)\right]
+&amp;= \max_\pi \mathbb E_y\!\left[r(x,y)-\beta\log\frac{\pi(y\mid x)}{\pi_{\text{ref}}(y\mid x)}\right] \\
+&amp;= \min_\pi \mathbb E_y\!\left[\log\frac{\pi(y\mid x)}{\pi_{\text{ref}}(y\mid x)}-\frac1\beta r(x,y)\right]
 \end{aligned}
 $$
 </div>
@@ -284,12 +284,12 @@ $$
 $$
 \begin{aligned}
 p^*(y_w\succ y_l\mid x)
-&= \sigma\bigl(r^*(x,y_w)-r^*(x,y_l)\bigr) \\[4pt]
-&= \sigma\Bigl(
+&amp;= \sigma\bigl(r^*(x,y_w)-r^*(x,y_l)\bigr) \\[4pt]
+&amp;= \sigma\Bigl(
    \beta\log\tfrac{\pi^*(y_w\mid x)}{\pi_{\text{ref}}(y_w\mid x)}+\beta\log Z(x)
    - \beta\log\tfrac{\pi^*(y_l\mid x)}{\pi_{\text{ref}}(y_l\mid x)} - \beta\log Z(x)
    \Bigr) \\[4pt]
-&= \sigma\Bigl(
+&amp;= \sigma\Bigl(
    \beta\log\tfrac{\pi^*(y_w\mid x)}{\pi_{\text{ref}}(y_w\mid x)}
    - \beta\log\tfrac{\pi^*(y_l\mid x)}{\pi_{\text{ref}}(y_l\mid x)}
    \Bigr)
@@ -532,7 +532,7 @@ DPO 直接把 <span class="math math-inline">$Z(x)$</span> 写进 reparameteriza
 </div>
 <div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
   <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">log-prob 是 sequence-level</span></div>
-  <div class="callout-body"><p>这里 <span class="math math-inline">$\log\pi(y\mid x) = \sum_t\log\pi(y_t\mid x,y_{<t})$</span> —— 整条回复的所有 token log-prob <strong>求和</strong>（不是平均、不是末 token），因为 BT 模型识别的是<strong>整条回复</strong>的偏好，不是 token 级偏好。
+  <div class="callout-body"><p>这里 <span class="math math-inline">$\log\pi(y\mid x) = \sum_t\log\pi(y_t\mid x,y_{&lt;t})$</span> —— 整条回复的所有 token log-prob <strong>求和</strong>（不是平均、不是末 token），因为 BT 模型识别的是<strong>整条回复</strong>的偏好，不是 token 级偏好。
 （后续 SimPO 改用&quot;长度归一化的 log-prob&quot;，正是要修复这一点带来的长度偏置。）</p>
 </div>
 </div>

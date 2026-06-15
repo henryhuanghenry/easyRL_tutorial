@@ -307,10 +307,10 @@ $$
 $$
 \begin{aligned}
 V_\pi(s)
-&\le \mathbb E[r_t + \gamma V_\pi(s_{t+1})\mid \pi'] \\
-&\le \mathbb E[r_t + \gamma r_{t+1} + \gamma^2 V_\pi(s_{t+2})\mid \pi'] \\
-&\le \cdots \\
-&\le \mathbb E\!\left[\sum_{k=0}^{\infty}\gamma^k r_{t+k}\,\Big|\,\pi'\right] = V_{\pi'}(s)
+&amp;\le \mathbb E[r_t + \gamma V_\pi(s_{t+1})\mid \pi'] \\
+&amp;\le \mathbb E[r_t + \gamma r_{t+1} + \gamma^2 V_\pi(s_{t+2})\mid \pi'] \\
+&amp;\le \cdots \\
+&amp;\le \mathbb E\!\left[\sum_{k=0}^{\infty}\gamma^k r_{t+k}\,\Big|\,\pi'\right] = V_{\pi'}(s)
 \end{aligned}
 $$
 </div>
@@ -406,7 +406,7 @@ $$
 <h4 id="-greedy"><span class="math math-inline">$\varepsilon$</span>-greedy</h4>
 <div class="math math-block">
 $$
-a = \begin{cases} \arg\max_a Q(s,a), & \text{w.p. } 1-\varepsilon \\ \text{均匀随机}, & \text{w.p. } \varepsilon \end{cases}
+a = \begin{cases} \arg\max_a Q(s,a), &amp; \text{w.p. } 1-\varepsilon \\ \text{均匀随机}, &amp; \text{w.p. } \varepsilon \end{cases}
 $$
 </div>
 <div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">

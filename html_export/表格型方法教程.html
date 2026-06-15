@@ -243,8 +243,8 @@ $$
 <div class="math math-block">
 $$
 \begin{aligned}
-\mu_t &= \frac{1}{t}\sum_{j=1}^t x_j = \frac{1}{t}\big(x_t + (t-1)\mu_{t-1}\big) \\
-&= \mu_{t-1} + \frac{1}{t}(x_t - \mu_{t-1})
+\mu_t &amp;= \frac{1}{t}\sum_{j=1}^t x_j = \frac{1}{t}\big(x_t + (t-1)\mu_{t-1}\big) \\
+&amp;= \mu_{t-1} + \frac{1}{t}(x_t - \mu_{t-1})
 \end{aligned}
 $$
 </div>
@@ -368,10 +368,10 @@ $$
 <div class="math math-block">
 $$
 \begin{aligned}
-n=1 \;(\text{TD}(0)) &: \quad G_t^{(1)} = r_{t+1} + \gamma V(s_{t+1}) \\
-n=2 &: \quad G_t^{(2)} = r_{t+1} + \gamma r_{t+2} + \gamma^2 V(s_{t+2}) \\
-&\;\;\vdots \\
-n=\infty \;(\text{MC}) &: \quad G_t^{(\infty)} = r_{t+1} + \gamma r_{t+2} + \dots + \gamma^{T-t-1} r_T
+n=1 \;(\text{TD}(0)) &amp;: \quad G_t^{(1)} = r_{t+1} + \gamma V(s_{t+1}) \\
+n=2 &amp;: \quad G_t^{(2)} = r_{t+1} + \gamma r_{t+2} + \gamma^2 V(s_{t+2}) \\
+&amp;\;\;\vdots \\
+n=\infty \;(\text{MC}) &amp;: \quad G_t^{(\infty)} = r_{t+1} + \gamma r_{t+2} + \dots + \gamma^{T-t-1} r_T
 \end{aligned}\tag{3.2}
 $$
 </div>
@@ -430,8 +430,8 @@ $$
 <div class="math math-block">
 $$
 \pi(a\mid s) = \begin{cases}
-1-\varepsilon+\dfrac{\varepsilon}{|\mathcal A|} & a=\arg\max_{a'}Q(s,a') \\[6pt]
-\dfrac{\varepsilon}{|\mathcal A|} & \text{otherwise}
+1-\varepsilon+\dfrac{\varepsilon}{|\mathcal A|} &amp; a=\arg\max_{a'}Q(s,a') \\[6pt]
+\dfrac{\varepsilon}{|\mathcal A|} &amp; \text{otherwise}
 \end{cases}
 $$
 </div>
@@ -444,10 +444,10 @@ $$
 <div class="math math-block">
 $$
 \begin{aligned}
-Q^\pi(s,\pi'(s)) &= \sum_a \pi'(a\mid s)\, Q^\pi(s,a)  && \leftarrow\ \text{Q 与策略的定义}\\
-&= \tfrac{\varepsilon}{|\mathcal A|}\sum_a Q^\pi(s,a) + (1-\varepsilon)\max_a Q^\pi(s,a) && \leftarrow\ \text{代入 ε-greedy 概率}\\
-&\geq \tfrac{\varepsilon}{|\mathcal A|}\sum_a Q^\pi(s,a) + (1-\varepsilon)\sum_a \tfrac{\pi(a\mid s)-\varepsilon/|\mathcal A|}{1-\varepsilon}Q^\pi(s,a) && \leftarrow\ \max \geq\text{ 凸组合}\\
-&= \sum_a \pi(a\mid s) Q^\pi(s,a) = V^\pi(s)
+Q^\pi(s,\pi'(s)) &amp;= \sum_a \pi'(a\mid s)\, Q^\pi(s,a)  &amp;&amp; \leftarrow\ \text{Q 与策略的定义}\\
+&amp;= \tfrac{\varepsilon}{|\mathcal A|}\sum_a Q^\pi(s,a) + (1-\varepsilon)\max_a Q^\pi(s,a) &amp;&amp; \leftarrow\ \text{代入 ε-greedy 概率}\\
+&amp;\geq \tfrac{\varepsilon}{|\mathcal A|}\sum_a Q^\pi(s,a) + (1-\varepsilon)\sum_a \tfrac{\pi(a\mid s)-\varepsilon/|\mathcal A|}{1-\varepsilon}Q^\pi(s,a) &amp;&amp; \leftarrow\ \max \geq\text{ 凸组合}\\
+&amp;= \sum_a \pi(a\mid s) Q^\pi(s,a) = V^\pi(s)
 \end{aligned}
 $$
 </div>

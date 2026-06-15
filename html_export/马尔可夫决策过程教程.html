@@ -167,10 +167,10 @@ $$
 <div class="math math-block">
 $$
 \boldsymbol P=\begin{pmatrix}
-p(s_1\mid s_1) & p(s_2\mid s_1) & \cdots & p(s_N\mid s_1) \\
-p(s_1\mid s_2) & p(s_2\mid s_2) & \cdots & p(s_N\mid s_2) \\
-\vdots & \vdots & \ddots & \vdots \\
-p(s_1\mid s_N) & p(s_2\mid s_N) & \cdots & p(s_N\mid s_N)
+p(s_1\mid s_1) &amp; p(s_2\mid s_1) &amp; \cdots &amp; p(s_N\mid s_1) \\
+p(s_1\mid s_2) &amp; p(s_2\mid s_2) &amp; \cdots &amp; p(s_N\mid s_2) \\
+\vdots &amp; \vdots &amp; \ddots &amp; \vdots \\
+p(s_1\mid s_N) &amp; p(s_2\mid s_N) &amp; \cdots &amp; p(s_N\mid s_N)
 \end{pmatrix}
 $$
 </div>
@@ -201,7 +201,7 @@ $$
 <div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
   <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">折扣因子 <span class="math math-inline">$\gamma$</span> 的四个动机</span></div>
   <div class="callout-body"><ol>
-<li><strong>避免无穷回报</strong>：MRP 可能带环、不终结，<span class="math math-inline">$\gamma<1$</span> 让 <span class="math math-inline">$\sum \gamma^k r$</span> 几何收敛。</li>
+<li><strong>避免无穷回报</strong>：MRP 可能带环、不终结，<span class="math math-inline">$\gamma&lt;1$</span> 让 <span class="math math-inline">$\sum \gamma^k r$</span> 几何收敛。</li>
 <li><strong>不确定性贴现</strong>：我们对未来环境的建模并不精确，越远的预测越不可信 → 打折相当于&quot;自我怀疑&quot;。</li>
 <li><strong>金融贴现</strong>：现在 1 块钱比一年后 1 块钱更值钱（机会成本/通胀）。</li>
 <li><strong>行为偏好</strong>：让智能体倾向&quot;早拿奖励&quot;，避免无意义拖延。</li>
@@ -543,13 +543,13 @@ $$
 </div>
 <div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
   <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text"><span class="math math-inline">$V^*$</span> 唯一，<span class="math math-inline">$\pi^*$</span> 不一定唯一</span></div>
-  <div class="callout-body"><p>一个 MDP 的最优值函数是<strong>唯一</strong>的——它由 MDP 本身完全决定（贝尔曼最优算子在 <span class="math math-inline">$\gamma<1$</span> 时是 <span class="math math-inline">$\gamma$</span>-压缩映射，Banach 不动点定理保证唯一不动点 <span class="math math-inline">$V^*$</span>）。但能达到这个最优值的策略<strong>可能多个</strong>：若在某状态 <span class="math math-inline">$s$</span> 下有两个动作 <span class="math math-inline">$a_1, a_2$</span> 满足 <span class="math math-inline">$Q^*(s,a_1)=Q^*(s,a_2)=\max$</span>，那么任意混合都是最优策略。&quot;有限 MDP 一定存在<strong>确定性平稳</strong>最优策略&quot;是 Howard / Puterman 的经典结果——所以只看 <span class="math math-inline">$\arg\max_a Q^*(s,a)$</span> 不会损失任何最优性。</p>
+  <div class="callout-body"><p>一个 MDP 的最优值函数是<strong>唯一</strong>的——它由 MDP 本身完全决定（贝尔曼最优算子在 <span class="math math-inline">$\gamma&lt;1$</span> 时是 <span class="math math-inline">$\gamma$</span>-压缩映射，Banach 不动点定理保证唯一不动点 <span class="math math-inline">$V^*$</span>）。但能达到这个最优值的策略<strong>可能多个</strong>：若在某状态 <span class="math math-inline">$s$</span> 下有两个动作 <span class="math math-inline">$a_1, a_2$</span> 满足 <span class="math math-inline">$Q^*(s,a_1)=Q^*(s,a_2)=\max$</span>，那么任意混合都是最优策略。&quot;有限 MDP 一定存在<strong>确定性平稳</strong>最优策略&quot;是 Howard / Puterman 的经典结果——所以只看 <span class="math math-inline">$\arg\max_a Q^*(s,a)$</span> 不会损失任何最优性。</p>
 </div>
 </div>
 <h3 id="从-提取">从 <span class="math math-inline">$Q^*$</span> 提取 <span class="math math-inline">$\pi^*$</span></h3>
 <div class="math math-block">
 $$
-\pi^*(a\mid s) = \begin{cases} 1, & a=\arg\max_{a'\in A} Q^*(s,a')\\ 0, & \text{其他}\end{cases}
+\pi^*(a\mid s) = \begin{cases} 1, &amp; a=\arg\max_{a'\in A} Q^*(s,a')\\ 0, &amp; \text{其他}\end{cases}
 $$
 </div>
 <h3 id="贝尔曼最优方程">贝尔曼最优方程</h3>
@@ -793,7 +793,7 @@ def policy_iteration(P, R, gamma=0.9):
 <div class="callout callout-summary" style="border-left-color:#64748b; background:#64748b14;">
   <div class="callout-title"><span class="callout-icon">📌</span><span class="callout-title-text">常见坑（debug 必查）</span></div>
   <div class="callout-body"><ul>
-<li><strong><span class="math math-inline">$\gamma=1$</span> 且无终止状态</strong> → <span class="math math-inline">$G_t$</span> 发散，价值迭代不收敛。务必保证有吸收态或 <span class="math math-inline">$\gamma<1$</span>。</li>
+<li><strong><span class="math math-inline">$\gamma=1$</span> 且无终止状态</strong> → <span class="math math-inline">$G_t$</span> 发散，价值迭代不收敛。务必保证有吸收态或 <span class="math math-inline">$\gamma&lt;1$</span>。</li>
 <li><strong>终止状态的价值必须显式设为 0</strong>——很多 bug 来自&quot;忘了把吸收态从更新里剔除&quot;。</li>
 <li><strong>收敛阈值 <span class="math math-inline">$\varepsilon$</span></strong>：相对量级要看 <span class="math math-inline">$R/(1-\gamma)$</span> 的尺度，机械地取 <span class="math math-inline">$10^{-6}$</span> 在大奖励问题上其实很松。</li>
 <li><strong>奖励下标错位</strong>：本教程 §3.1 公式用 Sutton 风格 <span class="math math-inline">$G_t=r_{t+1}+\gamma r_{t+2}+\cdots$</span>（&quot;做完 <span class="math math-inline">$a_t$</span> 拿到 <span class="math math-inline">$r_{t+1}$</span>&quot;），但 §3.3 的 <span class="math math-inline">$s_4\to s_5\to\cdots$</span> 数值例子是按&quot;起步奖励 = <span class="math math-inline">$R(s_t)$</span>&quot;算的（<span class="math math-inline">$G=R(s_4)+\gamma R(s_5)+\cdots$</span>），两套约定差一个 <span class="math math-inline">$\gamma$</span> 因子——例子保留原文结果便于对照，<strong>自写代码请固定一套</strong>别两套混着用。</li>

@@ -107,7 +107,7 @@
 <tr>
 <td>状态 <span class="math math-inline">$s_t$</span></td>
 <td>环境给（像素、joint angles）</td>
-<td>prompt <span class="math math-inline">$q$</span> + 已生成 token <span class="math math-inline">$o_{<t}$</span></td>
+<td>prompt <span class="math math-inline">$q$</span> + 已生成 token <span class="math math-inline">$o_{&lt;t}$</span></td>
 </tr>
 <tr>
 <td>动作 <span class="math math-inline">$a_t$</span></td>
@@ -157,13 +157,13 @@ $$
 </div>
 <p>其中</p>
 <ul>
-<li><span class="math math-inline">$r_t(\theta) = \dfrac{\pi_\theta(o_t\mid q,o_{<t})}{\pi_{\theta_{\text{old}}}(o_t\mid q,o_{<t})}$</span> 是 token 级 ratio；</li>
+<li><span class="math math-inline">$r_t(\theta) = \dfrac{\pi_\theta(o_t\mid q,o_{&lt;t})}{\pi_{\theta_{\text{old}}}(o_t\mid q,o_{&lt;t})}$</span> 是 token 级 ratio；</li>
 <li><span class="math math-inline">$A_t$</span> 由 <strong>GAE</strong> 基于 <span class="math math-inline">$V_\phi$</span> 估出；</li>
 <li>标准 RLHF 还会把 KL 罚<strong>加进 reward</strong>（Ouyang et al. 2022）：</li>
 </ul>
 <div class="math math-block">
 $$
-r_t = r_\varphi(q,o_{\le t}) - \beta\,\log\frac{\pi_\theta(o_t\mid q,o_{<t})}{\pi_{\text{ref}}(o_t\mid q,o_{<t})}
+r_t = r_\varphi(q,o_{\le t}) - \beta\,\log\frac{\pi_\theta(o_t\mid q,o_{&lt;t})}{\pi_{\text{ref}}(o_t\mid q,o_{&lt;t})}
 \tag{2}
 $$
 </div>
@@ -244,10 +244,10 @@ $$
 $$
 \boxed{\;
 \begin{aligned}
-\mathcal J_{\text{GRPO}}(\theta) =\;& \mathbb E_{q\sim P(Q),\,\{o_i\}_{i=1}^G\sim\pi_{\theta_{\text{old}}}(\cdot|q)} \\
-& \frac{1}{G}\sum_{i=1}^{G}\frac{1}{|o_i|}\sum_{t=1}^{|o_i|}\Bigl\{
+\mathcal J_{\text{GRPO}}(\theta) =\;&amp; \mathbb E_{q\sim P(Q),\,\{o_i\}_{i=1}^G\sim\pi_{\theta_{\text{old}}}(\cdot|q)} \\
+&amp; \frac{1}{G}\sum_{i=1}^{G}\frac{1}{|o_i|}\sum_{t=1}^{|o_i|}\Bigl\{
 \min\!\Bigl(r_{i,t}(\theta)\,\hat A_{i,t},\;\text{clip}(r_{i,t}(\theta),1-\varepsilon,1+\varepsilon)\,\hat A_{i,t}\Bigr) \\
-& \qquad\qquad\qquad\;\; -\;\beta\,\mathbb D_{\mathrm{KL}}\!\bigl[\pi_\theta\,\|\,\pi_{\text{ref}}\bigr]
+&amp; \qquad\qquad\qquad\;\; -\;\beta\,\mathbb D_{\mathrm{KL}}\!\bigl[\pi_\theta\,\|\,\pi_{\text{ref}}\bigr]
 \Bigr\}
 \end{aligned}
 \;}\tag{3}
@@ -256,7 +256,7 @@ $$
 <p>其中</p>
 <div class="math math-block">
 $$
-r_{i,t}(\theta) = \frac{\pi_\theta(o_{i,t}\mid q,o_{i,<t})}{\pi_{\theta_{\text{old}}}(o_{i,t}\mid q,o_{i,<t})}
+r_{i,t}(\theta) = \frac{\pi_\theta(o_{i,t}\mid q,o_{i,&lt;t})}{\pi_{\theta_{\text{old}}}(o_{i,t}\mid q,o_{i,&lt;t})}
 $$
 </div>
 <h3 id="2.2-与-(1)-的逐项对照">2.2 与 (1) 的逐项对照</h3>
@@ -636,7 +636,7 @@ for iteration = 1..I:
 <p>论文给出一个非常漂亮的 unified gradient form：</p>
 <div class="math math-block">
 $$
-\nabla_\theta \mathcal J_{\mathcal A}(\theta) = \mathbb E_{(q,o)\sim D}\!\left[\frac{1}{|o|}\sum_{t=1}^{|o|} \underbrace{GC_{\mathcal A}(q,o,t,\pi_{rf})}_{\text{gradient coefficient}}\,\nabla_\theta\log\pi_\theta(o_t\mid q,o_{<t})\right]\tag{7}
+\nabla_\theta \mathcal J_{\mathcal A}(\theta) = \mathbb E_{(q,o)\sim D}\!\left[\frac{1}{|o|}\sum_{t=1}^{|o|} \underbrace{GC_{\mathcal A}(q,o,t,\pi_{rf})}_{\text{gradient coefficient}}\,\nabla_\theta\log\pi_\theta(o_t\mid q,o_{&lt;t})\right]\tag{7}
 $$
 </div>
 <p><strong>所有方法的差异都体现在三处</strong>：data source <span class="math math-inline">$D$</span>、reward function <span class="math math-inline">$\pi_{rf}$</span>、gradient coefficient <span class="math math-inline">$GC$</span>。</p>
@@ -752,7 +752,7 @@ def grpo_loss(
 <li><strong>reward 全相同的 group 不处理</strong> → 即使 <code>+1e-8</code>，adv 也接近 0；可选 drop。</li>
 <li><strong>process 版本 advantage 写成&quot;step reward 自身&quot;</strong> → 必须是&quot;后续 step 的累加&quot;（reward-to-go），不要漏 <span class="math math-inline">$\sum_{\text{index}(j)\ge t}$</span>。</li>
 <li><strong>token-level vs sequence-level mean</strong> 实现要清楚自己在哪条路线上（论文式 (3) 是 sequence-level；DAPO/Dr.GRPO 是 token-level）。</li>
-<li><strong>多 epoch (<span class="math math-inline">$\mu>1$</span>) 时</strong>：所有 <code>logp_old</code> 必须用最初 rollout 时的版本，不要中途刷新。</li>
+<li><strong>多 epoch (<span class="math math-inline">$\mu&gt;1$</span>) 时</strong>：所有 <code>logp_old</code> 必须用最初 rollout 时的版本，不要中途刷新。</li>
 <li><strong>rollout 阶段省 vLLM</strong>：<span class="math math-inline">$G=64 \times$</span> batch=1024 = 65k 条采样，用 HF generate 会让训练 idle 大半时间，强烈建议 vLLM。</li>
 </ul>
 </div>

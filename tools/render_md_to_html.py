@@ -274,13 +274,16 @@ def replace_wikilinks(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _math_inline_renderer(self, tokens, idx, options, env):
-    # Re-emit as raw $...$ for client-side KaTeX auto-render
-    content = tokens[idx].content
+    # Re-emit as raw $...$ for client-side KaTeX auto-render.
+    # CRITICAL: escape `<` `>` `&` so the browser does not parse e.g. `o_{<t}`
+    # as the start of an HTML tag. KaTeX auto-render reads textContent, which
+    # decodes &lt; back to `<` before passing to KaTeX, so math is unaffected.
+    content = html.escape(tokens[idx].content, quote=False)
     return f"<span class=\"math math-inline\">${content}$</span>"
 
 
 def _math_block_renderer(self, tokens, idx, options, env):
-    content = tokens[idx].content.strip("\n")
+    content = html.escape(tokens[idx].content.strip("\n"), quote=False)
     label = tokens[idx].info  # if dollarmath labels enabled
     label_attr = f' id="eq-{html.escape(label)}"' if label else ""
     return f"<div class=\"math math-block\"{label_attr}>\n$$\n{content}\n$$\n</div>\n"

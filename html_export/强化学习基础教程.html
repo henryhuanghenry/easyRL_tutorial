@@ -342,7 +342,7 @@ $$
 <li><strong>数学上</strong>：让无穷和收敛（否则 <span class="math math-inline">$\sum r$</span> 可能发散）——对于 <strong>continuing 任务必须 <span class="math math-inline">$\gamma\in[0,1)$</span></strong>；<strong>episodic 任务（有终止状态）可取 <span class="math math-inline">$\gamma=1$</span></strong>（如 CartPole、棋类）</li>
 <li><strong>金融直觉</strong>：今天的 100 块 &gt; 10 天后的 100 块（有利息/有不确定性）</li>
 <li><strong>算法上</strong>：<span class="math math-inline">$\gamma$</span> 充当&quot;有效视野长度&quot; <span class="math math-inline">$\approx 1/(1-\gamma)$</span>（折扣权重衰减到 <span class="math math-inline">$1/e$</span> 所需步数），<span class="math math-inline">$\gamma=0.99$</span> 意味&quot;约 100 步外的奖励开始显著被压低&quot;——不是&quot;100 步外就完全不算&quot;</li>
-<li><strong>稳定性</strong>：<span class="math math-inline">$\gamma<1$</span> 让 Bellman 算子成为收缩映射，迭代收敛有保证</li>
+<li><strong>稳定性</strong>：<span class="math math-inline">$\gamma&lt;1$</span> 让 Bellman 算子成为收缩映射，迭代收敛有保证</li>
 </ol>
 </div>
 </div>

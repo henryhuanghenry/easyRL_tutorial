@@ -272,7 +272,7 @@ J_{\text{TRPO}}^{\theta'}(\theta) =
 \mathbb E_{(s_t,a_t)\sim\pi_{\theta'}}\!\left[
 \frac{p_\theta(a_t\mid s_t)}{p_{\theta'}(a_t\mid s_t)}\,
 A^{\theta'}(s_t,a_t)\right],
-\quad \text{s.t. } \mathrm{KL}(\theta,\theta')<\delta
+\quad \text{s.t. } \mathrm{KL}(\theta,\theta')&lt;\delta
 $$
 </div>
 <div class="callout callout-danger" style="border-left-color:#ef4444; background:#ef444414;">
@@ -339,11 +339,11 @@ $$
 </thead>
 <tbody>
 <tr>
-<td><span class="math math-inline">$\mathrm{KL}(\theta,\theta^k) > \mathrm{KL}_{\max}$</span></td>
+<td><span class="math math-inline">$\mathrm{KL}(\theta,\theta^k) &gt; \mathrm{KL}_{\max}$</span></td>
 <td><span class="math math-inline">$\beta \uparrow$</span>（罚得不够）</td>
 </tr>
 <tr>
-<td><span class="math math-inline">$\mathrm{KL}(\theta,\theta^k) < \mathrm{KL}_{\min}$</span></td>
+<td><span class="math math-inline">$\mathrm{KL}(\theta,\theta^k) &lt; \mathrm{KL}_{\min}$</span></td>
 <td><span class="math math-inline">$\beta \downarrow$</span>（罚得太狠）</td>
 </tr>
 </tbody>
@@ -388,32 +388,32 @@ $$
 <tbody>
 <tr>
 <td>1</td>
-<td><span class="math math-inline">$A>0$</span>（好动作）</td>
-<td><span class="math math-inline">$r > 1+\varepsilon$</span></td>
+<td><span class="math math-inline">$A&gt;0$</span>（好动作）</td>
+<td><span class="math math-inline">$r &gt; 1+\varepsilon$</span></td>
 <td><span class="math math-inline">$(1+\varepsilon)A$</span> <strong>被 clip</strong></td>
 <td>梯度 <span class="math math-inline">$=0$</span>，<strong>封顶</strong></td>
 <td>好动作，但已被推得太狠 → 刹车</td>
 </tr>
 <tr>
 <td>2</td>
-<td><span class="math math-inline">$A>0$</span>（好动作）</td>
-<td><span class="math math-inline">$r < 1-\varepsilon$</span></td>
+<td><span class="math math-inline">$A&gt;0$</span>（好动作）</td>
+<td><span class="math math-inline">$r &lt; 1-\varepsilon$</span></td>
 <td><span class="math math-inline">$rA$</span> <strong>未 clip</strong></td>
 <td>正常梯度 → 继续 <span class="math math-inline">$\uparrow r$</span></td>
 <td>好动作却被旧策略压低很多 → <strong>加速拉回</strong></td>
 </tr>
 <tr>
 <td>3</td>
-<td><span class="math math-inline">$A<0$</span>（差动作）</td>
-<td><span class="math math-inline">$r < 1-\varepsilon$</span></td>
+<td><span class="math math-inline">$A&lt;0$</span>（差动作）</td>
+<td><span class="math math-inline">$r &lt; 1-\varepsilon$</span></td>
 <td><span class="math math-inline">$(1-\varepsilon)A$</span> <strong>被 clip</strong></td>
 <td>梯度 <span class="math math-inline">$=0$</span>，<strong>封底</strong></td>
 <td>差动作概率已被压得很低 → 别再压</td>
 </tr>
 <tr>
 <td>4</td>
-<td><span class="math math-inline">$A<0$</span>（差动作）</td>
-<td><span class="math math-inline">$r > 1+\varepsilon$</span></td>
+<td><span class="math math-inline">$A&lt;0$</span>（差动作）</td>
+<td><span class="math math-inline">$r &gt; 1+\varepsilon$</span></td>
 <td><span class="math math-inline">$rA$</span> <strong>未 clip</strong></td>
 <td>正常梯度 → 继续 <span class="math math-inline">$\downarrow r$</span></td>
 <td>差动作概率反而被推高了 → <strong>使劲拉回</strong></td>
@@ -444,8 +444,8 @@ L↑                                       L↑
    想拉回时不被限制)                       想拉回时不被限制)
 </code></pre>
 <ul>
-<li><strong><span class="math math-inline">$A>0$</span></strong>：<span class="math math-inline">$L=\min(rA,\,(1+\varepsilon)A)$</span>。<span class="math math-inline">$r\le 1+\varepsilon$</span> 时取 <span class="math math-inline">$rA$</span>（线性上升）；<span class="math math-inline">$r>1+\varepsilon$</span> 时被钳在 <span class="math math-inline">$(1+\varepsilon)A$</span>（<strong>水平封顶</strong>，梯度 0）。<strong>左半部分无封底</strong>——因为情况 #2 不需要刹车。</li>
-<li><strong><span class="math math-inline">$A<0$</span></strong>：<span class="math math-inline">$L=\min(rA,\,(1-\varepsilon)A)$</span>。<span class="math math-inline">$r\ge 1-\varepsilon$</span> 时取 <span class="math math-inline">$rA$</span>（线性下降）；<span class="math math-inline">$r<1-\varepsilon$</span> 时被钳在 <span class="math math-inline">$(1-\varepsilon)A$</span>（<strong>水平封底</strong>，梯度 0）。<strong>右半部分无封顶</strong>——因为情况 #4 不需要刹车。</li>
+<li><strong><span class="math math-inline">$A&gt;0$</span></strong>：<span class="math math-inline">$L=\min(rA,\,(1+\varepsilon)A)$</span>。<span class="math math-inline">$r\le 1+\varepsilon$</span> 时取 <span class="math math-inline">$rA$</span>（线性上升）；<span class="math math-inline">$r&gt;1+\varepsilon$</span> 时被钳在 <span class="math math-inline">$(1+\varepsilon)A$</span>（<strong>水平封顶</strong>，梯度 0）。<strong>左半部分无封底</strong>——因为情况 #2 不需要刹车。</li>
+<li><strong><span class="math math-inline">$A&lt;0$</span></strong>：<span class="math math-inline">$L=\min(rA,\,(1-\varepsilon)A)$</span>。<span class="math math-inline">$r\ge 1-\varepsilon$</span> 时取 <span class="math math-inline">$rA$</span>（线性下降）；<span class="math math-inline">$r&lt;1-\varepsilon$</span> 时被钳在 <span class="math math-inline">$(1-\varepsilon)A$</span>（<strong>水平封底</strong>，梯度 0）。<strong>右半部分无封顶</strong>——因为情况 #4 不需要刹车。</li>
 </ul>
 <hr />
 <h2 id="6.-PPO-算法流程">6. PPO 算法流程</h2>
@@ -462,7 +462,7 @@ L↑                                       L↑
 <li>计算 ratio <span class="math math-inline">$r_t(\theta) = \dfrac{\pi_\theta(a_t\mid s_t)}{\pi_{\theta^k}(a_t\mid s_t)}$</span></li>
 <li>计算 clip 损失（公式 5.8），价值损失 <span class="math math-inline">$(V_\phi(s_t)-\hat R_t)^2$</span>，熵奖励</li>
 <li>SGD/Adam 一步更新 <span class="math math-inline">$\theta,\phi$</span></li>
-<li>（工程常用）若 approx-KL <span class="math math-inline">$> 1.5\cdot \mathrm{KL}_{\text{target}}$</span>，<strong>early stop</strong> 本轮 epoch，防止过冲</li>
+<li>（工程常用）若 approx-KL <span class="math math-inline">$&gt; 1.5\cdot \mathrm{KL}_{\text{target}}$</span>，<strong>early stop</strong> 本轮 epoch，防止过冲</li>
 </ul>
 </li>
 <li><span class="math math-inline">$\theta^{k+1}\leftarrow \theta$</span></li>

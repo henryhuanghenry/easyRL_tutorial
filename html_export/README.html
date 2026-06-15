@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>README</title>
+  <link rel="stylesheet" href="_assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3/lib/viz-standalone.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async function () {
+      // 1. highlight.js — only on blocks that opted in via language-XXX class
+      try {
+        document.querySelectorAll('pre code').forEach(function (block) {
+          if (block.classList.contains('language-dot')) return;
+          if (block.classList.contains('language-mermaid')) return;
+          // Skip auto-detect on un-tagged blocks (e.g. ASCII diagrams) — hljs
+          // mis-classifies short text and recolours it badly.
+          var hasLang = false;
+          for (var i = 0; i < block.classList.length; i++) {
+            if (block.classList[i].indexOf('language-') === 0) { hasLang = true; break; }
+          }
+          if (!hasLang) return;
+          window.hljs && window.hljs.highlightElement(block);
+        });
+      } catch (e) { console.warn('hljs failed', e); }
+
+      // 2. Graphviz: replace <pre><code class="language-dot"> with rendered SVG
+      try {
+        if (window.Viz && typeof window.Viz.instance === 'function') {
+          const vizInstance = await window.Viz.instance();
+          document.querySelectorAll('pre code.language-dot').forEach(function (block) {
+            try {
+              const svg = vizInstance.renderSVGElement(block.textContent);
+              const wrapper = document.createElement('div');
+              wrapper.className = 'graphviz';
+              wrapper.appendChild(svg);
+              block.parentElement.replaceWith(wrapper);
+            } catch (err) {
+              console.error('viz render failed', err);
+              block.parentElement.classList.add('graphviz-error');
+            }
+          });
+        } else {
+          console.warn('viz-js not loaded');
+        }
+      } catch (e) { console.warn('viz init failed', e); }
+
+      // 3. Mermaid
+      try {
+        if (window.mermaid) {
+          window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+          await window.mermaid.run({ querySelector: 'pre.mermaid' });
+        }
+      } catch (e) { console.warn('mermaid failed', e); }
+
+      // 4. KaTeX last so it does not fight hljs/viz
+      try {
+        if (window.renderMathInElement) {
+          window.renderMathInElement(document.body, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$',  right: '$',  display: false }
+            ],
+            throwOnError: false,
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+          });
+        }
+      } catch (e) { console.warn('katex failed', e); }
+    });
+  </script>
+</head>
+<body>
+<header class="meta">
+  <h1 class="doc-title">README</h1>
+  <div class="meta-row">
+    <span class="meta-tags"></span>
+    
+    
+  </div>
+</header>
+
+<main class="doc">
+<h1 id="Easy-RL-高密度教程">Easy-RL 高密度教程</h1>
+<p>把 <a href="https://datawhalechina.github.io/easy-rl/" target="_blank" rel="noopener noreferrer">Easy-RL</a> 章节 + 经典 RL/RLHF 论文整理成 <strong>Obsidian 高密度教程</strong>，强调推导链完整、工程坑讲清、一图总览。</p>
+<h2 id="教程清单">教程清单</h2>
+<p>按学习顺序：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>教程</th>
+<th>主题</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><a href="%E5%BC%BA%E5%8C%96%E5%AD%A6%E4%B9%A0%E5%9F%BA%E7%A1%80%E6%95%99%E7%A8%8B.md">强化学习基础教程</a></td>
+<td>RL 三要素 / MDP/POMDP / 探索利用 / 多臂赌博机</td>
+</tr>
+<tr>
+<td>2</td>
+<td><a href="%E9%A9%AC%E5%B0%94%E5%8F%AF%E5%A4%AB%E5%86%B3%E7%AD%96%E8%BF%87%E7%A8%8B%E6%95%99%E7%A8%8B.md">马尔可夫决策过程教程</a></td>
+<td>贝尔曼方程、策略迭代、价值迭代</td>
+</tr>
+<tr>
+<td>3</td>
+<td><a href="%E8%A1%A8%E6%A0%BC%E5%9E%8B%E6%96%B9%E6%B3%95%E6%95%99%E7%A8%8B.md">表格型方法教程</a></td>
+<td>蒙特卡洛、时序差分、Sarsa、Q-learning</td>
+</tr>
+<tr>
+<td>4</td>
+<td><a href="%E7%AD%96%E7%95%A5%E6%A2%AF%E5%BA%A6%E6%95%99%E7%A8%8B.md">策略梯度教程</a></td>
+<td>REINFORCE、Log-Derivative Trick、降方差</td>
+</tr>
+<tr>
+<td>5</td>
+<td><a href="PPO%E6%95%99%E7%A8%8B.md">PPO教程</a></td>
+<td>重要性采样、TRPO → PPO-Clip / PPO-Penalty</td>
+</tr>
+<tr>
+<td>6</td>
+<td><a href="DQN%E6%95%99%E7%A8%8B.md">DQN教程</a></td>
+<td>Q 网络、Replay Buffer、Target Network</td>
+</tr>
+<tr>
+<td>7</td>
+<td><a href="DQN%E8%BF%9B%E9%98%B6%E6%8A%80%E5%B7%A7%E6%95%99%E7%A8%8B.md">DQN进阶技巧教程</a></td>
+<td>Double / Dueling / PER / Noisy / Distributional / Rainbow</td>
+</tr>
+<tr>
+<td>8</td>
+<td><a href="%E8%BF%9E%E7%BB%AD%E5%8A%A8%E4%BD%9CDQN%E6%95%99%E7%A8%8B.md">连续动作DQN教程</a></td>
+<td>NAF / DDPG / TD3 / QT-Opt</td>
+</tr>
+<tr>
+<td>9</td>
+<td><a href="Actor-Critic%E6%95%99%E7%A8%8B.md">Actor-Critic教程</a></td>
+<td>A2C / A3C / GAE / DDPG</td>
+</tr>
+<tr>
+<td>10</td>
+<td><a href="DPO%E6%95%99%E7%A8%8B.md">DPO教程</a></td>
+<td>直接偏好优化（arXiv 2305.18290）</td>
+</tr>
+<tr>
+<td>11</td>
+<td><a href="GRPO%E6%95%99%E7%A8%8B.md">GRPO教程</a></td>
+<td>组相对策略优化（DeepSeekMath / R1）</td>
+</tr>
+</tbody>
+</table>
+<p>写作规范见 <a href="_%E6%80%BB%E7%BB%93%E6%B5%81%E7%A8%8B%E4%B8%8E%E8%A6%81%E6%B1%82.md">_总结流程与要求.md</a>。</p>
+<h2 id="渲染成-PDF">渲染成 PDF</h2>
+<p>仓库已含 HTML 产物（<code>html_export/</code>）。从 HTML 出 PDF：</p>
+<pre><code class="language-bash"># 1) 生成 HTML（如果改了 md）
+uv pip install --system markdown-it-py mdit-py-plugins pyyaml
+python3 tools/render_md_to_html.py --all --out-dir html_export
+
+# 2) HTML → PDF（Chrome headless）
+mkdir -p pdf_export
+CHROME=&quot;/Applications/Google Chrome.app/Contents/MacOS/Google Chrome&quot;
+for html in html_export/*.html; do
+  name=$(basename &quot;$html&quot; .html)
+  &quot;$CHROME&quot; --headless=new --disable-gpu --no-pdf-header-footer \
+    --virtual-time-budget=15000 --run-all-compositor-stages-before-draw \
+    --print-to-pdf=&quot;pdf_export/${name}.pdf&quot; --print-to-pdf-no-header \
+    &quot;file://$(pwd)/$html&quot;
+done
+</code></pre>
+<p>CSS 已针对 A4 做打印优化：本地 SVG 90% 宽，外部 PNG 65% 宽居中，callout/表格/代码块加 <code>page-break-inside: avoid</code>。</p>
+<p><code>pdf_export/</code> 不进仓库（38M），跑一次 ~30 秒。</p>
+<h2 id="风格">风格</h2>
+<ul>
+<li>每篇含：abstract callout、形式化、分 Step 推导、直观解读、实现技巧、Cheat Sheet、graphviz 一图总览、关联笔记</li>
+<li>公式块用 <code>\boxed{}</code> 高亮关键结论，<code>\tag{}</code> 保留原文公式编号</li>
+<li>Obsidian callout 类型：abstract / note / tip / warning / danger / success / info / example / summary / checklist</li>
+<li>Graphviz 配色约定：起点浅蓝、关键 trick 浅黄、改进版浅绿、最终 SOTA 浅红</li>
+</ul>
+<h2 id="目录">目录</h2>
+<pre><code>.
+├── *教程.md                  # 11 篇教程
+├── _总结流程与要求.md         # 写作规范
+├── tools/
+│   └── render_md_to_html.py # md → html 渲染脚本（A4 打印优化）
+└── html_export/             # 渲染产物
+    ├── _assets/style.css
+    └── *.html
+</code></pre>
+
+</main>
+</body>
+</html>

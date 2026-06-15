@@ -175,8 +175,8 @@ $$
 $$
 \begin{aligned}
 p_\theta(\tau)
-&= p(s_1)\,p_\theta(a_1\mid s_1)\,p(s_2\mid s_1,a_1)\,p_\theta(a_2\mid s_2)\cdots\\[4pt]
-&= p(s_1)\prod_{t=1}^{T} \underbrace{p_\theta(a_t\mid s_t)}_{\text{策略，可控}}\;\underbrace{p(s_{t+1}\mid s_t,a_t)}_{\text{环境，不可控}}
+&amp;= p(s_1)\,p_\theta(a_1\mid s_1)\,p(s_2\mid s_1,a_1)\,p_\theta(a_2\mid s_2)\cdots\\[4pt]
+&amp;= p(s_1)\prod_{t=1}^{T} \underbrace{p_\theta(a_t\mid s_t)}_{\text{策略，可控}}\;\underbrace{p(s_{t+1}\mid s_t,a_t)}_{\text{环境，不可控}}
 \end{aligned}
 $$
 </div>
@@ -225,10 +225,10 @@ $$
 $$
 \begin{aligned}
 \nabla_\theta \bar R_\theta
-&= \sum_\tau R(\tau)\, \nabla p_\theta(\tau) \\
-&= \sum_\tau R(\tau)\, p_\theta(\tau)\, \frac{\nabla p_\theta(\tau)}{p_\theta(\tau)} \\
-&= \sum_\tau R(\tau)\, p_\theta(\tau)\, \nabla \log p_\theta(\tau) \\
-&= \mathbb E_{\tau\sim p_\theta(\tau)}\!\bigl[\, R(\tau)\, \nabla \log p_\theta(\tau)\,\bigr]
+&amp;= \sum_\tau R(\tau)\, \nabla p_\theta(\tau) \\
+&amp;= \sum_\tau R(\tau)\, p_\theta(\tau)\, \frac{\nabla p_\theta(\tau)}{p_\theta(\tau)} \\
+&amp;= \sum_\tau R(\tau)\, p_\theta(\tau)\, \nabla \log p_\theta(\tau) \\
+&amp;= \mathbb E_{\tau\sim p_\theta(\tau)}\!\bigl[\, R(\tau)\, \nabla \log p_\theta(\tau)\,\bigr]
 \end{aligned}
 $$
 </div>
@@ -242,9 +242,9 @@ $$
 $$
 \begin{aligned}
 \nabla \log p_\theta(\tau)
-&= \nabla\!\left[\log p(s_1) + \sum_{t=1}^{T}\log p_\theta(a_t\mid s_t) + \sum_{t=1}^{T}\log p(s_{t+1}\mid s_t,a_t)\right]\\
-&= \underbrace{\nabla \log p(s_1)}_{=\,0} + \sum_{t=1}^{T}\nabla\log p_\theta(a_t\mid s_t) + \underbrace{\sum_{t=1}^{T}\nabla\log p(s_{t+1}\mid s_t,a_t)}_{=\,0}\\
-&= \sum_{t=1}^{T}\nabla\log p_\theta(a_t\mid s_t)
+&amp;= \nabla\!\left[\log p(s_1) + \sum_{t=1}^{T}\log p_\theta(a_t\mid s_t) + \sum_{t=1}^{T}\log p(s_{t+1}\mid s_t,a_t)\right]\\
+&amp;= \underbrace{\nabla \log p(s_1)}_{=\,0} + \sum_{t=1}^{T}\nabla\log p_\theta(a_t\mid s_t) + \underbrace{\sum_{t=1}^{T}\nabla\log p(s_{t+1}\mid s_t,a_t)}_{=\,0}\\
+&amp;= \sum_{t=1}^{T}\nabla\log p_\theta(a_t\mid s_t)
 \end{aligned}
 $$
 </div>
@@ -276,8 +276,8 @@ $$
 <h2 id="4.-直观解读">4. 直观解读</h2>
 <p>公式 (PG) 的物理含义：</p>
 <ul>
-<li>若 <span class="math math-inline">$R(\tau^n)>0$</span> → 增大状态 <span class="math math-inline">$s_t^n$</span> 下采取 <span class="math math-inline">$a_t^n$</span> 的概率</li>
-<li>若 <span class="math math-inline">$R(\tau^n)<0$</span> → 减小该概率</li>
+<li>若 <span class="math math-inline">$R(\tau^n)&gt;0$</span> → 增大状态 <span class="math math-inline">$s_t^n$</span> 下采取 <span class="math math-inline">$a_t^n$</span> 的概率</li>
+<li>若 <span class="math math-inline">$R(\tau^n)&lt;0$</span> → 减小该概率</li>
 <li><strong>权重就是整条轨迹的回报</strong></li>
 </ul>
 <h3 id="与监督分类的类比">与监督分类的类比</h3>

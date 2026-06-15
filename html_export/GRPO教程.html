@@ -1,0 +1,868 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GRPO（Group Relative Policy Optimization）高密度教程</title>
+  <link rel="stylesheet" href="_assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3/lib/viz-standalone.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async function () {
+      // 1. highlight.js — only on blocks that opted in via language-XXX class
+      try {
+        document.querySelectorAll('pre code').forEach(function (block) {
+          if (block.classList.contains('language-dot')) return;
+          if (block.classList.contains('language-mermaid')) return;
+          // Skip auto-detect on un-tagged blocks (e.g. ASCII diagrams) — hljs
+          // mis-classifies short text and recolours it badly.
+          var hasLang = false;
+          for (var i = 0; i < block.classList.length; i++) {
+            if (block.classList[i].indexOf('language-') === 0) { hasLang = true; break; }
+          }
+          if (!hasLang) return;
+          window.hljs && window.hljs.highlightElement(block);
+        });
+      } catch (e) { console.warn('hljs failed', e); }
+
+      // 2. Graphviz: replace <pre><code class="language-dot"> with rendered SVG
+      try {
+        if (window.Viz && typeof window.Viz.instance === 'function') {
+          const vizInstance = await window.Viz.instance();
+          document.querySelectorAll('pre code.language-dot').forEach(function (block) {
+            try {
+              const svg = vizInstance.renderSVGElement(block.textContent);
+              const wrapper = document.createElement('div');
+              wrapper.className = 'graphviz';
+              wrapper.appendChild(svg);
+              block.parentElement.replaceWith(wrapper);
+            } catch (err) {
+              console.error('viz render failed', err);
+              block.parentElement.classList.add('graphviz-error');
+            }
+          });
+        } else {
+          console.warn('viz-js not loaded');
+        }
+      } catch (e) { console.warn('viz init failed', e); }
+
+      // 3. Mermaid
+      try {
+        if (window.mermaid) {
+          window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+          await window.mermaid.run({ querySelector: 'pre.mermaid' });
+        }
+      } catch (e) { console.warn('mermaid failed', e); }
+
+      // 4. KaTeX last so it does not fight hljs/viz
+      try {
+        if (window.renderMathInElement) {
+          window.renderMathInElement(document.body, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$',  right: '$',  display: false }
+            ],
+            throwOnError: false,
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+          });
+        }
+      } catch (e) { console.warn('katex failed', e); }
+    });
+  </script>
+</head>
+<body>
+<header class="meta">
+  <h1 class="doc-title">GRPO（Group Relative Policy Optimization）高密度教程</h1>
+  <div class="meta-row">
+    <span class="meta-tags"><span class="meta-tag">#强化学习</span><span class="meta-tag">#RLHF</span><span class="meta-tag">#PPO</span><span class="meta-tag">#GRPO</span><span class="meta-tag">#大语言模型推理</span></span>
+    <span class="meta-source">来源：<a href="https://arxiv.org/abs/2402.03300">https://arxiv.org/abs/2402.03300</a></span>
+    <span class="meta-date">2026-06-15</span>
+  </div>
+</header>
+
+<main class="doc">
+<h1 id="GRPO（Group-Relative-Policy-Optimization）">GRPO（Group Relative Policy Optimization）</h1>
+<div class="callout callout-abstract" style="border-left-color:#7c3aed; background:#7c3aed14;">
+  <div class="callout-title"><span class="callout-icon">📋</span><span class="callout-title-text">一句话</span></div>
+  <div class="callout-body"><p><strong>GRPO</strong> = 把 <span class="wikilink" data-target="PPO教程" title="PPO教程">PPO</span> 里那个和 actor 同规模的 critic <span class="math math-inline">$V_\phi$</span> <strong>彻底删掉</strong>，改用&quot;对同一个 prompt 采 <span class="math math-inline">$G$</span> 条回答、用这一组回答的 reward 均值/方差做 baseline&quot;得到的 <strong>group-relative advantage</strong>，再套 PPO-Clip 的 ratio 裁剪与 KL 正则。一句口诀：<strong>&quot;组内蒙特卡洛 baseline 替代 critic&quot;</strong>——显存对半砍、推理任务 sparse reward 也照吃，是 DeepSeekMath / DeepSeek-R1 的工业默认 RL 算法。</p>
+</div>
+</div>
+<hr />
+<h2 id="1.-背景：LLM-后训练-RL-的特殊性，与-PPO-的痛">1. 背景：LLM 后训练 RL 的特殊性，与 PPO 的痛</h2>
+<h3 id="1.1-LLM-RL-≠-经典控制-RL">1.1 LLM RL ≠ 经典控制 RL</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>经典 RL（Atari / 控制）</th>
+<th>LLM 后训练 RL（RLHF / 推理）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>状态 <span class="math math-inline">$s_t$</span></td>
+<td>环境给（像素、joint angles）</td>
+<td>prompt <span class="math math-inline">$q$</span> + 已生成 token <span class="math math-inline">$o_{<t}$</span></td>
+</tr>
+<tr>
+<td>动作 <span class="math math-inline">$a_t$</span></td>
+<td>离散按键 / 连续力矩</td>
+<td><strong>下一个 token</strong>（词表上的 categorical）</td>
+</tr>
+<tr>
+<td>奖励 <span class="math math-inline">$r_t$</span></td>
+<td>环境每步给 dense scalar</td>
+<td>通常<strong>只在终止 token</strong>给一个 reward（ORM / 规则裁判 / 人偏好分）</td>
+</tr>
+<tr>
+<td>episode 长度</td>
+<td>数百~上万步</td>
+<td>数十~数千 token</td>
+</tr>
+<tr>
+<td>环境</td>
+<td>仿真器或真实世界</td>
+<td>reward model（神经网络）/ 答案校验器</td>
+</tr>
+<tr>
+<td>价值函数 <span class="math math-inline">$V$</span></td>
+<td>几层 MLP，远小于 actor</td>
+<td><strong>和 actor 同规模</strong>（7B/70B），训练时显存翻倍</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">LLM 场景下 critic 极难训</span></div>
+  <div class="callout-body"><ol>
+<li><strong>稀疏 reward</strong>：reward 只在 EOS 时给，让 <span class="math math-inline">$V_\phi(s_t)$</span> 在前面所有 token 上都&quot;凭空猜后面的得分&quot;——bootstrap 链很长且监督极弱。</li>
+<li><strong>规模相当</strong>：LLM RL 里 critic 通常和 policy 同结构（7B vs 7B），整个 RL 训练同时挂 actor + critic + reference + reward 4 个大模型，<strong>显存被 critic 吃掉一半</strong>。</li>
+<li><strong>token-level value 不准</strong>：reward 只标注最后一个 token，要求 critic 学出每个 token 的细粒度价值——监督信号几乎无从谈起。</li>
+</ol>
+</div>
+</div>
+<h3 id="1.2-PPO-在-LLM-上的显式形式（先把要替换的对象写出来）">1.2 PPO 在 LLM 上的显式形式（先把要替换的对象写出来）</h3>
+<p>为后文方便，PPO 在 LLM 上的目标函数写成：</p>
+<div class="math math-block">
+$$
+\mathcal J_{\text{PPO}}(\theta) = \mathbb E_{q\sim P(Q),\,o\sim \pi_{\theta_{\text{old}}}(\cdot|q)}\,
+\frac{1}{|o|}\sum_{t=1}^{|o|}
+\min\!\Bigl(r_t(\theta)\,A_t,\;\text{clip}(r_t(\theta),1-\varepsilon,1+\varepsilon)\,A_t\Bigr)
+\tag{1}
+$$
+</div>
+<p>其中</p>
+<ul>
+<li><span class="math math-inline">$r_t(\theta) = \dfrac{\pi_\theta(o_t\mid q,o_{<t})}{\pi_{\theta_{\text{old}}}(o_t\mid q,o_{<t})}$</span> 是 token 级 ratio；</li>
+<li><span class="math math-inline">$A_t$</span> 由 <strong>GAE</strong> 基于 <span class="math math-inline">$V_\phi$</span> 估出；</li>
+<li>标准 RLHF 还会把 KL 罚<strong>加进 reward</strong>（Ouyang et al. 2022）：</li>
+</ul>
+<div class="math math-block">
+$$
+r_t = r_\varphi(q,o_{\le t}) - \beta\,\log\frac{\pi_\theta(o_t\mid q,o_{<t})}{\pi_{\text{ref}}(o_t\mid q,o_{<t})}
+\tag{2}
+$$
+</div>
+<h3 id="1.3-GRPO-的破题点">1.3 GRPO 的破题点</h3>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">一句话破题</span></div>
+  <div class="callout-body"><p><strong>既然 reward 只在最后给，前面 token 上 <span class="math math-inline">$V_\phi$</span> 估得很糟；那不如用同一个 prompt 下采 <span class="math math-inline">$G$</span> 条 trajectory，用这组 reward 的&quot;组内均值&quot;当 baseline——它就是 prompt 难度的无偏估计，且不需要任何参数化网络。</strong> Critic 删掉，显存省下，监督还更可靠。</p>
+</div>
+</div>
+<p>形式上：用同一 prompt <span class="math math-inline">$q$</span> 采 <span class="math math-inline">$G$</span> 条 <span class="math math-inline">$\{o_i\}_{i=1}^G$</span>，每条得到 reward <span class="math math-inline">$r_i$</span>，把</p>
+<div class="math math-block">
+$$
+\hat A_i = \frac{r_i - \mathrm{mean}(\{r_1,\dots,r_G\})}{\mathrm{std}(\{r_1,\dots,r_G\})}
+$$
+</div>
+<p>当 advantage（同一回答内所有 token 共享），再套 PPO-Clip 即可。</p>
+<h3 id="1.4-PPO-vs-GRPO-一表看穿">1.4 PPO vs GRPO 一表看穿</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>PPO</th>
+<th><strong>GRPO</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>critic <span class="math math-inline">$V_\phi$</span></td>
+<td>✅ 必需，与 actor 同规模</td>
+<td>❌ <strong>完全删除</strong></td>
+</tr>
+<tr>
+<td>advantage 估计</td>
+<td>GAE（基于 <span class="math math-inline">$V_\phi$</span>）</td>
+<td><strong>组内 reward 标准化</strong>（<span class="math math-inline">$z$</span>-score）</td>
+</tr>
+<tr>
+<td>训练时挂载的大模型</td>
+<td>actor + critic + ref + reward（4 个）</td>
+<td>actor + ref + reward（3 个）</td>
+</tr>
+<tr>
+<td>显存（同等 actor，仅 trainable 部分）</td>
+<td><span class="math math-inline">$\approx 2\times$</span></td>
+<td><span class="math math-inline">$\approx 1\times$</span></td>
+</tr>
+<tr>
+<td>reward 类型</td>
+<td>scalar（dense 或 sparse）</td>
+<td>sparse outcome 友好；也支持 process</td>
+</tr>
+<tr>
+<td>单 prompt 采样数</td>
+<td>1 条 trajectory</td>
+<td><strong><span class="math math-inline">$G$</span> 条</strong>（典型 <span class="math math-inline">$G=64$</span>）</td>
+</tr>
+<tr>
+<td>KL 正则</td>
+<td>加在 reward 里（per-token）</td>
+<td><strong>直接加在 loss</strong>，用 <strong>k3 无偏估计器</strong></td>
+</tr>
+<tr>
+<td>主流应用</td>
+<td>InstructGPT / ChatGPT RLHF</td>
+<td><strong>DeepSeekMath / DeepSeek-R1</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">显存口径</span></div>
+  <div class="callout-body"><p>表中&quot;<span class="math math-inline">$2\times$</span> vs <span class="math math-inline">$1\times$</span>&quot;仅指 <strong>trainable 模型那一份</strong>：PPO 多挂一个与 actor 同规模的 critic 要训练。两边都还要挂 ref + reward，那两份显存两边一样。具体差距还受 CPU offload、optimizer state、ZeRO 等工程因素影响——论文 Figure 4 仅给定性对比。</p>
+</div>
+</div>
+<hr />
+<h2 id="2.-形式化：GRPO-的目标函数">2. 形式化：GRPO 的目标函数</h2>
+<h3 id="2.1-完整-GRPO-目标（论文式-(3)）">2.1 完整 GRPO 目标（论文式 (3)）</h3>
+<div class="math math-block">
+$$
+\boxed{\;
+\begin{aligned}
+\mathcal J_{\text{GRPO}}(\theta) =\;& \mathbb E_{q\sim P(Q),\,\{o_i\}_{i=1}^G\sim\pi_{\theta_{\text{old}}}(\cdot|q)} \\
+& \frac{1}{G}\sum_{i=1}^{G}\frac{1}{|o_i|}\sum_{t=1}^{|o_i|}\Bigl\{
+\min\!\Bigl(r_{i,t}(\theta)\,\hat A_{i,t},\;\text{clip}(r_{i,t}(\theta),1-\varepsilon,1+\varepsilon)\,\hat A_{i,t}\Bigr) \\
+& \qquad\qquad\qquad\;\; -\;\beta\,\mathbb D_{\mathrm{KL}}\!\bigl[\pi_\theta\,\|\,\pi_{\text{ref}}\bigr]
+\Bigr\}
+\end{aligned}
+\;}\tag{3}
+$$
+</div>
+<p>其中</p>
+<div class="math math-block">
+$$
+r_{i,t}(\theta) = \frac{\pi_\theta(o_{i,t}\mid q,o_{i,<t})}{\pi_{\theta_{\text{old}}}(o_{i,t}\mid q,o_{i,<t})}
+$$
+</div>
+<h3 id="2.2-与-(1)-的逐项对照">2.2 与 (1) 的逐项对照</h3>
+<table>
+<thead>
+<tr>
+<th>(1) PPO</th>
+<th>(3) GRPO</th>
+<th>区别</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>单条 <span class="math math-inline">$o$</span>，对 <span class="math math-inline">$t$</span> 平均</td>
+<td><span class="math math-inline">$G$</span> 条 <span class="math math-inline">$o_i$</span>，先对组平均再对 <span class="math math-inline">$t$</span> 平均</td>
+<td><strong>多采样平均，方差更低</strong></td>
+</tr>
+<tr>
+<td><span class="math math-inline">$A_t$</span> 由 GAE+<span class="math math-inline">$V_\phi$</span></td>
+<td><span class="math math-inline">$\hat A_{i,t}$</span> 由组内 reward 标准化</td>
+<td><strong>去 critic 的核心</strong></td>
+</tr>
+<tr>
+<td>KL 加在 reward 里（式 (2)）</td>
+<td>KL 直接加在 loss、用 k3 估计器</td>
+<td><strong>简化 advantage、降梯度方差</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="2.3-KL-用的是-k3-无偏估计器（不是-PPO-的-k1）">2.3 KL 用的是 <strong>k3 无偏估计器</strong>（不是 PPO 的 k1）</h3>
+<div class="callout callout-danger" style="border-left-color:#ef4444; background:#ef444414;">
+  <div class="callout-title"><span class="callout-icon">🔥</span><span class="callout-title-text">最容易写错的一处</span></div>
+  <div class="callout-body"><p>论文式 (4) 用的是 Schulman 博客里的 <strong>k3 估计器</strong>：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+\mathbb D_{\mathrm{KL}}\!\bigl[\pi_\theta\,\|\,\pi_{\text{ref}}\bigr]
+= \frac{\pi_{\text{ref}}(o_{i,t}\mid \cdot)}{\pi_\theta(o_{i,t}\mid \cdot)}
+- \log\frac{\pi_{\text{ref}}(o_{i,t}\mid \cdot)}{\pi_\theta(o_{i,t}\mid \cdot)}
+- 1
+\;}\tag{4}
+$$
+</div>
+<p><strong>不是</strong> PPO 里常见的 <span class="math math-inline">$\log\pi_\theta - \log\pi_{\text{ref}}$</span>（k1 估计）。</p>
+</div>
+</div>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">三种 KL 估计器对照</span></div>
+  <div class="callout-body"><p>设 <span class="math math-inline">$u = \log\pi_\theta(o)/\pi_{\text{ref}}(o)$</span>（这里 <span class="math math-inline">$\pi_\theta$</span> 是采样分布）。</p>
+<table>
+<thead>
+<tr>
+<th>估计器</th>
+<th>公式</th>
+<th>偏差</th>
+<th>方差</th>
+<th>是否恒非负</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>k1</td>
+<td><span class="math math-inline">$u$</span></td>
+<td>无偏</td>
+<td>大</td>
+<td>❌ 可负</td>
+</tr>
+<tr>
+<td>k2</td>
+<td><span class="math math-inline">$\frac12 u^2$</span></td>
+<td>有偏</td>
+<td>小</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>k3</strong>（GRPO 用）</td>
+<td><span class="math math-inline">$e^{-u}-1+u$</span> = <span class="math math-inline">$\frac{\pi_{\text{ref}}}{\pi_\theta}-\log\frac{\pi_{\text{ref}}}{\pi_\theta}-1$</span></td>
+<td><strong>无偏</strong></td>
+<td><strong>小</strong></td>
+<td>✅</td>
+</tr>
+</tbody>
+</table>
+<p>k3 是 <span class="math math-inline">$f(u)=e^{-u}$</span> 的二阶 Taylor 控制变量，期望 <span class="math math-inline">$\mathbb E_{\pi_\theta}[e^{-u}-1+u] = \mathrm{KL}(\pi_\theta\|\pi_{\text{ref}})$</span>，且<strong>单样本就恒 ≥ 0</strong>（用 <span class="math math-inline">$e^x\ge x+1$</span>）——完美适合作为 loss 的一项被梯度直接最小化。</p>
+</div>
+</div>
+<hr />
+<h2 id="3.-Advantage-推导：组内蒙特卡洛-baseline">3. Advantage 推导：组内蒙特卡洛 baseline</h2>
+<h3 id="Step-1-·-起点：朴素-PG-的-baseline-形式">Step 1 · 起点：朴素 PG 的 baseline 形式</h3>
+<p><span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span> 章节已证：减状态相关 baseline <span class="math math-inline">$b(s)$</span> 不改变期望、可降方差：</p>
+<div class="math math-block">
+$$
+\nabla \bar R_\theta = \mathbb E_{\tau}\bigl[(R(\tau)-b(s))\,\nabla\log\pi_\theta(a\mid s)\bigr]
+$$
+</div>
+<p>PPO 用 <span class="math math-inline">$V_\phi(s)\approx\mathbb E[R\mid s]$</span> 当 baseline；问题是 <span class="math math-inline">$V_\phi$</span> 在 LLM 里<strong>昂贵且难训</strong>（§1.1）。</p>
+<h3 id="Step-2-·-关键观察：同-prompt-的-reward-同分布">Step 2 · 关键观察：同 prompt 的 reward 同分布</h3>
+<p>固定 prompt <span class="math math-inline">$q$</span>，从 <span class="math math-inline">$\pi_{\theta_{\text{old}}}$</span> 采的 <span class="math math-inline">$G$</span> 条回答 <span class="math math-inline">$\{o_i\}$</span> 相互独立同分布，对应的 reward <span class="math math-inline">$\{r_i\}$</span> 也同分布。<strong>它们的样本均值 <span class="math math-inline">$\bar r$</span> 是 <span class="math math-inline">$\mathbb E_{o\sim\pi_{\theta_{\text{old}}}}[r(q,o)]$</span> 的无偏 MC 估计</strong>——这恰好就是&quot;以 <span class="math math-inline">$q$</span> 为条件的状态价值&quot; <span class="math math-inline">$V^{\pi_{\theta_{\text{old}}}}(q)$</span> 的样本估计。</p>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">aha moment</span></div>
+  <div class="callout-body"><p>所谓 critic，本就是 <span class="math math-inline">$V(q) = \mathbb E_o[r(q,o)]$</span> 的参数化估计；既然我们手头已经采了 <span class="math math-inline">$G$</span> 条，<strong>直接用样本均值替代它就好了</strong>——反正它在每次更新时都得<strong>重新 rollout</strong>（PPO 是 on-policy），那索性多采几条做&quot;组内蒙特卡洛&quot;。
+Critic 不是必需的，它只是当年没人愿意一次采 64 条时的工程妥协。</p>
+</div>
+</div>
+<h3 id="Step-3-·-Outcome-supervision-版本（论文-§4.1.2）">Step 3 · Outcome supervision 版本（论文 §4.1.2）</h3>
+<p>每条回答 <span class="math math-inline">$o_i$</span> 走完后由 <strong>ORM</strong>（outcome reward model）给一个 scalar reward <span class="math math-inline">$r_i$</span>。组内标准化：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+\hat A_{i,t} = \tilde r_i = \frac{r_i - \mathrm{mean}(\{r_1,\dots,r_G\})}{\mathrm{std}(\{r_1,\dots,r_G\})}
+\;}\tag{5}
+$$
+</div>
+<p><strong>同一回答 <span class="math math-inline">$o_i$</span> 内所有 token 共享同一个 <span class="math math-inline">$\hat A_{i,t}$</span></strong>——因为 reward 只在终止时给，没有 token 级信号。</p>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">为什么除以 std 也是必要的</span></div>
+  <div class="callout-body"><ul>
+<li>减均值：消除 prompt 难度（hard prompt 平均 reward 0.1、easy prompt 0.9，<strong>绝对值不可比</strong>）。</li>
+<li>除标准差：让不同 prompt 的 advantage 处于同一量级，避免 easy prompt（reward 全接近 1，方差大）主导梯度。
+二者合起来就是 <strong>group-wise z-score normalization</strong>——和 batch normalization 在 supervised 里的位置类似。</li>
+</ul>
+</div>
+</div>
+<h3 id="Step-4-·-Process-supervision-版本（论文-§4.1.3）">Step 4 · Process supervision 版本（论文 §4.1.3）</h3>
+<p>如果用 <strong>PRM</strong>（process reward model）给每个推理步打分，对 <span class="math math-inline">$o_i$</span> 在 token index <span class="math math-inline">$\text{index}(j)$</span> 处得到 step reward <span class="math math-inline">$r_i^{\text{index}(j)}$</span>。<strong>所有回答的所有 step reward 一起</strong>做标准化：</p>
+<div class="math math-block">
+$$
+\tilde r_i^{\text{index}(j)} = \frac{r_i^{\text{index}(j)} - \mathrm{mean}(\mathbf R)}{\mathrm{std}(\mathbf R)},
+\qquad
+\mathbf R = \{r_i^{\text{index}(j)}: \forall i,j\}
+$$
+</div>
+<p>（<span class="math math-inline">$i$</span> 仅遍历<strong>同一 prompt 的 <span class="math math-inline">$G$</span> 条 outputs</strong>，<span class="math math-inline">$j$</span> 遍历各 output 内所有 step——即在该 prompt 的所有 step reward 上做 z-score。）
+然后 token <span class="math math-inline">$t$</span> 的 advantage 是<strong>它后面所有 step 的标准化 reward 之和</strong>：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+\hat A_{i,t} = \sum_{\text{index}(j)\ge t} \tilde r_i^{\text{index}(j)}
+\;}\tag{6}
+$$
+</div>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">为什么是&quot;后续 step 的累加&quot;</span></div>
+  <div class="callout-body"><p>这是经典的 <strong>reward-to-go</strong> 思想（<span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span> §6 已讲）：token <span class="math math-inline">$t$</span> 的决策只能影响其<strong>未来</strong>的 reward，不该被过去的 reward &quot;奖惩&quot;。Process 版本只是把&quot;未来&quot;的粒度从 token 改成了 step。</p>
+</div>
+</div>
+<h3 id="Step-5-·-把-advantage-接回-(3)，合成完整-GRPO">Step 5 · 把 advantage 接回 (3)，合成完整 GRPO</h3>
+<p>把 (5) / (6) 代入式 (3)，配合 PPO-Clip 与 k3 KL 正则，就是论文 Algorithm 1 的训练目标。</p>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">优势估计 vs 算法骨架解耦</span></div>
+  <div class="callout-body"><p>Outcome 与 process 只是<strong>两种 advantage 估计方案</strong>——目标函数 (3) 的&quot;PPO-Clip + k3 KL&quot;骨架完全相同。<strong>这意味着 GRPO 是一个 advantage 估计的&quot;框架性替换&quot;，不是新算法骨架。</strong> 只要你愿意，理论上可以把 (5) 换成任何&quot;组内统计量&quot;。</p>
+</div>
+</div>
+<hr />
+<h2 id="4.-直观解读">4. 直观解读</h2>
+<h3 id="4.1-类比：考试组班-+-班级排名">4.1 类比：考试组班 + 班级排名</h3>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">类比：group = 一个考场</span></div>
+  <div class="callout-body"><ul>
+<li>每场考试 = 一个 prompt <span class="math math-inline">$q$</span></li>
+<li>一个考场里坐了 <span class="math math-inline">$G$</span> 个考生（<span class="math math-inline">$G$</span> 条采样回答）</li>
+<li>reward = 考分；班级均值 = baseline；班级标准差 = 归一化尺度</li>
+<li>排名（z-score）= advantage：<strong>相对于今天这个班的平均水平超出多少</strong></li>
+</ul>
+<p>为什么不跨场比？因为 prompt 难度天差地别（高考数学 vs 小升初），跨场的绝对分不可比，<strong>只有班级内排名才是公平的教学信号</strong>。Critic 想做的就是&quot;估计每场考试的班级均值&quot;，但既然你每场都摆了 64 个考生，<strong>直接算一下平均值就好了</strong>，不需要养一个&quot;难度预测器&quot;。</p>
+</div>
+</div>
+<h3 id="4.2-与-RLOO-的关系（重要前情）">4.2 与 RLOO 的关系（重要前情）</h3>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">GRPO 不是凭空冒出来的</span></div>
+  <div class="callout-body"><p>&quot;组内 baseline&quot; 早在 <strong>RLOO</strong>（REINFORCE Leave-One-Out, Kool et al. 2019 / Ahmadian et al. 2024）里就在用：第 <span class="math math-inline">$i$</span> 条样本的 baseline 取<strong>其他 <span class="math math-inline">$G-1$</span> 条的均值</strong>（leave-one-out，更无偏）。GRPO 的&quot;全组均值 + std 归一化 + PPO-Clip ratio + k3 KL&quot;是工程上的整套定型版本。可以把 GRPO 看成 <strong>&quot;RLOO baseline + PPO-Clip + KL 直加 loss&quot;</strong> 的合成。</p>
+</div>
+</div>
+<h3 id="4.3-为什么是-PPO-的&quot;减负&quot;而非&quot;翻篇&quot;">4.3 为什么是 PPO 的&quot;减负&quot;而非&quot;翻篇&quot;</h3>
+<p>GRPO <strong>完整保留</strong>了 PPO 的两大稳定术：</p>
+<ol>
+<li><strong>重要性采样 + ratio clip</strong>——允许同一批 rollout 多 epoch 更新，复用样本（论文实操中默认 <span class="math math-inline">$\mu=1$</span> 即不复用，但目标里仍然写 ratio 是为了<strong>与 <span class="math math-inline">$\theta_{\text{old}}$</span> 解耦</strong>）。</li>
+<li><strong>KL 罚到 ref policy</strong>——防 RLHF 里常见的 reward hacking / 离题。</li>
+</ol>
+<p><strong>唯一被替换的是 advantage 估计</strong>——critic 删掉，换成组内 MC baseline。</p>
+<h3 id="4.4-论文-Figure-4-示意">4.4 论文 Figure 4 示意</h3>
+<p><img src="https://ar5iv.labs.arxiv.org/html/2402.03300/assets/x2.png" alt="" /><em>图 4 · GRPO 用一组样本的 reward 计算 baseline，省掉 value model（来源：<a href="https://arxiv.org/abs/2402.03300" target="_blank" rel="noopener noreferrer">DeepSeekMath §4.1</a>）</em></p>
+<hr />
+<h2 id="5.-实现技巧-/-工程坑">5. 实现技巧 / 工程坑</h2>
+<h3 id="技巧-1-·-KL-务必用-k3-估计器，不要用-k1">技巧 1 · KL 务必用 k3 估计器，不要用 k1</h3>
+<div class="callout callout-danger" style="border-left-color:#ef4444; background:#ef444414;">
+  <div class="callout-title"><span class="callout-icon">🔥</span><span class="callout-title-text">naive 做法的痛点</span></div>
+  <div class="callout-body"><p>一种常见但欠妥的写法是把 KL 直接估成 <code>(logp_theta - logp_ref).mean()</code>——这就是 <strong>k1 估计</strong> <span class="math math-inline">$u=\log(\pi_\theta/\pi_{\text{ref}})$</span>。它在期望意义下<strong>仍然无偏</strong>（<span class="math math-inline">$\mathbb E_{\pi_\theta}[u]=\mathrm{KL}(\pi_\theta\|\pi_{\text{ref}})$</span>），但<strong>单样本下可正可负</strong>——作为 loss 项时无下界、方差大、单步梯度有非零概率把 <span class="math math-inline">$\pi_\theta$</span> 推离 <span class="math math-inline">$\pi_{\text{ref}}$</span>，训练极不稳。</p>
+<p>（注意：PPO 里常见的 <code>logp_new - logp_old</code> 算的是 importance ratio 的对数，与采样旧策略的差，与 ref 模型无关，<strong>不是这里说的 KL</strong>。GRPO 的 KL 是 <span class="math math-inline">$\pi_\theta\|\pi_{\text{ref}}$</span>。）</p>
+<p>GRPO 必须用：</p>
+<pre><code class="language-python"># ratio_ref = π_ref / π_θ  (注意分母是 π_θ，分子是 ref)
+ratio_ref = (logp_ref - logp_theta).exp()
+kl_k3 = ratio_ref - (logp_ref - logp_theta) - 1   # 即 e^{-u} + u - 1
+# 单样本恒 ≥ 0
+loss = -surrogate.mean() + beta * kl_k3.mean()
+</code></pre>
+</div>
+</div>
+<h3 id="技巧-2-·-group-size-的取舍">技巧 2 · group size <span class="math math-inline">$G$</span> 的取舍</h3>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text"><span class="math math-inline">$G$</span> 太小 baseline 不准；<span class="math math-inline">$G$</span> 太大显存爆炸</span></div>
+  <div class="callout-body"><ul>
+<li>论文 DeepSeekMath: <span class="math math-inline">$G = 64$</span>，max_len = 1024，batch = 1024（如果 batch 单位是 prompt——论文未明示——则每个梯度 step 实际跑约 65k 条 sequence）。</li>
+<li><span class="math math-inline">$G$</span> 太小（如 4-8）：均值/方差是 4-8 个样本估的，噪声极大，几乎等价于 reward 本身没归一化。</li>
+<li><span class="math math-inline">$G$</span> 太大：rollout 阶段时间被采样吃满；显存上一颗卡多 batch 会爆，需要并行环境 / vLLM 分布式推理。</li>
+<li>经验上 <span class="math math-inline">$G \in [8, 64]$</span> 是常见区间，社区复现 R1-zero 时常用 <span class="math math-inline">$G=16$</span>。</li>
+</ul>
+</div>
+</div>
+<h3 id="技巧-3-·-std=0-时务必加">技巧 3 · std=0 时务必加 <span class="math math-inline">$\varepsilon$</span></h3>
+<div class="callout callout-danger" style="border-left-color:#ef4444; background:#ef444414;">
+  <div class="callout-title"><span class="callout-icon">🔥</span><span class="callout-title-text">reward 全相同会除零</span></div>
+  <div class="callout-body"><p>当一组回答全对（reward 全为 1）或全错（reward 全为 0）时，<span class="math math-inline">$\mathrm{std}=0$</span>，<span class="math math-inline">$\hat A_{i,t}=0/0$</span>。两种做法：</p>
+<ol>
+<li><strong>加 epsilon</strong>：<code>adv = (r - r.mean()) / (r.std() + 1e-8)</code>，此时 <span class="math math-inline">$\hat A\equiv 0$</span>，等价于该 batch 不更新。</li>
+<li><strong>跳过</strong>：直接 drop 掉所有 reward 相同的 group。</li>
+</ol>
+<p>Trade-off：跳过会浪费 rollout（容易问题被丢），加 ε 会让&quot;全对/全错&quot;也提供 0 梯度——多数实现选 (1)。</p>
+</div>
+</div>
+<h3 id="技巧-4-·-outcome-还是-process，先看-reward-model">技巧 4 · outcome 还是 process，先看 reward model</h3>
+<table>
+<thead>
+<tr>
+<th>选 outcome 当且仅当</th>
+<th>选 process 当且仅当</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>只有终止裁判（数学题 verifier、code unit test）</td>
+<td>有训练好的 PRM（如 PRM800K）</td>
+</tr>
+<tr>
+<td>reward 模型只见过完整答案</td>
+<td>训练 PRM 的成本能 amortize</td>
+</tr>
+<tr>
+<td>任务步数短、错误传播弱</td>
+<td>长链推理、需要中间监督</td>
+</tr>
+</tbody>
+</table>
+<p>DeepSeekMath 实测 <strong>GRPO+PS &gt; GRPO+OS</strong>（论文图 5），但 PRM 的获取成本高得多。后来 DeepSeek-R1 完全只用 outcome（规则验证），证明 <strong>足够大的 model + 大 G + 长 rollout</strong> 下 outcome 也够。</p>
+<h3 id="技巧-5-·-sequence-level-vs-token-level-的-mean，不是无关紧要">技巧 5 · sequence-level vs token-level 的 mean，不是无关紧要</h3>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">公式 (3) 的 <span class="math math-inline">$\frac{1}{|o_i|}\sum_t$</span> 是争议点</span></div>
+  <div class="callout-body"><p>论文写的是<strong>先在每条回答内做 token 平均，再在组内做 <span class="math math-inline">$\frac{1}{G}\sum_i$</span> 平均</strong>。这意味着：</p>
+<ul>
+<li><strong>长回答的每个 token 权重更小</strong>（被 <span class="math math-inline">$1/|o_i|$</span> 拉低）。</li>
+<li><strong>短回答的每个 token 权重更大</strong>。</li>
+</ul>
+<p>后续工作（<strong><span class="wikilink" data-target="Dr.GRPO" title="Dr.GRPO">Dr.GRPO</span></strong>, Liu et al., Sea AI Lab 2025）指出这会带来 <strong>length bias</strong>——模型倾向于产出更长但低质量的回答（因为长回答里坏 token 被稀释）。
+<strong><span class="wikilink" data-target="DAPO" title="DAPO">DAPO</span></strong>（字节, 2025）和 Dr.GRPO 都改用 <strong>token-level mean across the whole batch</strong>：</p>
+<div class="math math-block">
+$$
+\frac{1}{\sum_i |o_i|}\sum_i \sum_t (\cdot)
+$$
+</div>
+<p>这一点社区争议大，<strong>复现论文请按 (3) 写；想要更稳的训练效果建议看 DAPO/Dr.GRPO 的修正</strong>。</p>
+</div>
+</div>
+<h3 id="技巧-6-·-迭代-RL：reward-model-也要持续训练">技巧 6 · 迭代 RL：reward model 也要持续训练</h3>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">Algorithm 1 的 outer loop（论文 §4.1.4）</span></div>
+  <div class="callout-body"><pre><code>for iteration = 1..I:
+    ref_model ← current policy        # ❶ ref 跟着 policy 滚
+    for step = 1..M:
+        运行内层 GRPO step
+    用最新 policy 采样产物，配合 10% 历史回放，继续训练 reward model
+</code></pre>
+<p><strong>关键点</strong>：</p>
+<ul>
+<li><strong>ref 周期性同步</strong>：每个 outer iteration 把 ref 重新设为当前 policy——与下面 reward model 持续训练配套，避免 ref 离当前 policy 越拉越远导致 KL 罚爆炸（教程解读，论文未明说动机）。</li>
+<li><strong>reward model 持续训练</strong>：随着 policy 进步，旧 RM 的判别力下降；用新 policy 采的样本+10% 历史 replay 继续训练 RM。
+这是 GRPO 真正能&quot;训得动&quot;的工程关键，不要只看式 (3) 不看 Algorithm 1。</li>
+</ul>
+</div>
+</div>
+<h3 id="技巧-7-·-log-prob-务必用采样当下的">技巧 7 · log-prob 务必用<strong>采样当下</strong>的 <span class="math math-inline">$\pi_{\theta_{\text{old}}}$</span></h3>
+<p>和 <span class="wikilink" data-target="PPO教程" title="PPO教程">PPO</span> 同坑：rollout 时<strong>当场记下</strong> <code>old_logp</code>，不要事后再调一次模型重算——会和当时的 <span class="math math-inline">$\theta_{\text{old}}$</span> 对不上，ratio 错位。</p>
+<hr />
+<h2 id="6.-算法流程">6. 算法流程</h2>
+<h3 id="6.1-GRPO-内层-step（伪代码）">6.1 GRPO 内层 step（伪代码）</h3>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">Outcome-supervision GRPO 一个 step</span></div>
+  <div class="callout-body"><pre><code>输入：当前 policy π_θ，参考 π_ref，旧 policy π_old，prompt batch D_b
+1. for q in D_b:                     # 每个 prompt 独立处理
+     sample {o_1, ..., o_G} ~ π_old(·|q)
+     r_i = reward_model(q, o_i)              for i = 1..G
+     r̃_i = (r_i - mean(r)) / (std(r) + 1e-8) # 组内 z-score
+     Â_{i,t} = r̃_i                          for all token t in o_i
+
+2. for inner_step = 1..μ:                    # 论文默认 μ=1
+     for (q, o_i) in batch:
+       ratio_{i,t} = exp(logπ_θ(o_{i,t}) - logπ_old(o_{i,t}))
+       surr1 = ratio_{i,t} * Â_{i,t}
+       surr2 = clip(ratio_{i,t}, 1-ε, 1+ε) * Â_{i,t}
+       L_clip = min(surr1, surr2)
+
+       # k3 KL（注意分子是 ref，分母是 θ，与 ratio 反向）
+       ratio_ref = exp(logπ_ref(o_{i,t}) - logπ_θ(o_{i,t}))
+       kl_k3 = ratio_ref - log(ratio_ref) - 1
+
+       loss = -mean_over_(i,t)(L_clip - β * kl_k3)
+     backward + optimizer.step()
+
+3. π_old ← π_θ                          # 同步旧策略
+</code></pre>
+</div>
+</div>
+<h3 id="6.2-完整迭代框架（论文-Algorithm-1）">6.2 完整迭代框架（论文 Algorithm 1）</h3>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">Iterative GRPO</span></div>
+  <div class="callout-body"><pre><code>输入：初始 policy π_init, reward model r_φ, prompts D, 超参 ε, β, μ
+π_θ ← π_init
+for iteration = 1..I:
+  π_ref ← π_θ                          # ref 同步当前 policy
+  for step = 1..M:
+    D_b ~ D
+    π_old ← π_θ
+    运行 §6.1 的内层 step
+  用最新 π_θ 采样 + 10% 历史回放，继续训练 r_φ
+输出：π_θ
+</code></pre>
+</div>
+</div>
+<h3 id="6.3-论文超参（DeepSeekMath-RL-7B）">6.3 论文超参（DeepSeekMath-RL 7B）</h3>
+<table>
+<thead>
+<tr>
+<th>超参</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>起点</td>
+<td>DeepSeekMath-Instruct 7B（已 SFT）</td>
+</tr>
+<tr>
+<td>RL 训练数据</td>
+<td>GSM8K + MATH，~144K 题</td>
+</tr>
+<tr>
+<td>reward model</td>
+<td>DeepSeekMath-Base 7B 微调，lr 2e-5</td>
+</tr>
+<tr>
+<td>policy lr</td>
+<td>1e-6</td>
+</tr>
+<tr>
+<td>KL 系数 <span class="math math-inline">$\beta$</span></td>
+<td>0.04</td>
+</tr>
+<tr>
+<td>group size <span class="math math-inline">$G$</span></td>
+<td><strong>64</strong></td>
+</tr>
+<tr>
+<td>max_len</td>
+<td>1024</td>
+</tr>
+<tr>
+<td>batch size</td>
+<td>1024</td>
+</tr>
+<tr>
+<td>内层 epoch <span class="math math-inline">$\mu$</span></td>
+<td>1（即不做多 epoch 复用）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7.-与-PPO-的统一视角（论文-§5.2.1）">7. 与 PPO 的统一视角（论文 §5.2.1）</h2>
+<p>论文给出一个非常漂亮的 unified gradient form：</p>
+<div class="math math-block">
+$$
+\nabla_\theta \mathcal J_{\mathcal A}(\theta) = \mathbb E_{(q,o)\sim D}\!\left[\frac{1}{|o|}\sum_{t=1}^{|o|} \underbrace{GC_{\mathcal A}(q,o,t,\pi_{rf})}_{\text{gradient coefficient}}\,\nabla_\theta\log\pi_\theta(o_t\mid q,o_{<t})\right]\tag{7}
+$$
+</div>
+<p><strong>所有方法的差异都体现在三处</strong>：data source <span class="math math-inline">$D$</span>、reward function <span class="math math-inline">$\pi_{rf}$</span>、gradient coefficient <span class="math math-inline">$GC$</span>。</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>data source</th>
+<th>reward function</th>
+<th><span class="math math-inline">$GC$</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SFT</td>
+<td>offline 人标</td>
+<td>无</td>
+<td><span class="math math-inline">$1$</span></td>
+</tr>
+<tr>
+<td>RFT</td>
+<td>offline，filter by rule</td>
+<td>rule</td>
+<td><span class="math math-inline">$\mathbb 1[\text{correct}]$</span></td>
+</tr>
+<tr>
+<td>DPO</td>
+<td>offline pair</td>
+<td>rule</td>
+<td>DPO 公式</td>
+</tr>
+<tr>
+<td>Online RFT</td>
+<td>online policy</td>
+<td>rule</td>
+<td><span class="math math-inline">$\mathbb 1[\text{correct}]$</span></td>
+</tr>
+<tr>
+<td><strong>PPO</strong></td>
+<td>online policy</td>
+<td>model</td>
+<td><span class="math math-inline">$A_t$</span>（GAE）</td>
+</tr>
+<tr>
+<td><strong>GRPO</strong></td>
+<td>online policy + group</td>
+<td>model</td>
+<td><span class="math math-inline">$\hat A_{i,t} + \beta\bigl(\frac{\pi_{\text{ref}}}{\pi_\theta}-1\bigr)$</span></td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">关键洞见（论文 §5.2.1）</span></div>
+  <div class="callout-body"><ul>
+<li><strong>GRPO 与 Online RFT 的差异</strong>：Online RFT 对所有正确样本无差别地推（<span class="math math-inline">$GC=1$</span>），GRPO 用 <span class="math math-inline">$\hat A$</span> 让 reward <strong>大小</strong>也参与梯度调制——能区分&quot;好答案&quot;与&quot;更好答案&quot;。</li>
+<li><strong>GRPO 与 PPO 的差异</strong>：advantage 估计方式不同；KL 出现在 <span class="math math-inline">$GC$</span> 而非 reward。</li>
+<li><strong>SFT 是最退化的特例</strong>：<span class="math math-inline">$GC\equiv 1$</span>，data 是离线人标。</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="8.-Cheat-Sheet">8. Cheat Sheet</h2>
+<h3 id="8.1-最小可跑-GRPO-loss（PyTorch-风格）">8.1 最小可跑 GRPO loss（PyTorch 风格）</h3>
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+def grpo_loss(
+    logp_theta,    # [B*G, T]  current policy log-prob, requires grad
+    logp_old,      # [B*G, T]  old policy log-prob, no grad（rollout 时存）
+    logp_ref,      # [B*G, T]  ref policy log-prob, no grad
+    rewards,       # [B*G]     scalar reward per sample（outcome）
+    mask,          # [B*G, T]  1 表示有效 token，PAD/prompt 部分=0
+    group_size,    # G
+    eps=0.2,       # clip range
+    beta=0.04,     # KL coef
+    eps_std=1e-8,
+):
+    B_times_G = rewards.size(0)
+    B = B_times_G // group_size
+
+    # 1. 组内标准化（关键步：reshape 到 [B, G] 做 row-wise norm）
+    r = rewards.view(B, group_size)
+    r_mean = r.mean(dim=1, keepdim=True)
+    r_std  = r.std(dim=1, keepdim=True)
+    adv = ((r - r_mean) / (r_std + eps_std)).view(B_times_G, 1)  # [B*G, 1]
+    adv = adv.expand_as(logp_theta)                              # 广播到每个 token
+
+    # 2. ratio + PPO-Clip
+    ratio  = (logp_theta - logp_old).exp()                       # [B*G, T]
+    surr1  = ratio * adv
+    surr2  = ratio.clamp(1 - eps, 1 + eps) * adv
+    pg_loss = -torch.min(surr1, surr2)                           # 注意负号：loss 是 -目标
+
+    # 3. k3 KL（注意分子是 ref，分母是 θ）
+    log_ratio_ref = logp_ref - logp_theta                        # u 的相反数: log(π_ref/π_θ)
+    kl_k3 = log_ratio_ref.exp() - log_ratio_ref - 1              # ≥ 0 by construction
+
+    # 4. 论文式 (3): 先 token 平均，再 group/batch 平均
+    seq_loss = ((pg_loss + beta * kl_k3) * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+    return seq_loss.mean()
+</code></pre>
+<div class="callout callout-summary" style="border-left-color:#64748b; background:#64748b14;">
+  <div class="callout-title"><span class="callout-icon">📌</span><span class="callout-title-text">常见坑（按踩坑频率排序）</span></div>
+  <div class="callout-body"><ul>
+<li><strong>KL 写成 k1（<code>logp_θ - logp_ref</code> 直接做 mean）</strong> → 单样本可负，loss 方向错。<strong>必修</strong>。</li>
+<li><strong>KL 分子分母搞反</strong> → k3 是 <span class="math math-inline">$\frac{\pi_{\text{ref}}}{\pi_\theta}-\log\frac{\pi_{\text{ref}}}{\pi_\theta}-1$</span>，<strong>不要写成 <span class="math math-inline">$\pi_\theta/\pi_{\text{ref}}$</span></strong>。</li>
+<li><strong>std=0 没加 eps</strong> → divide by zero / NaN loss。<code>+1e-8</code> 必加。</li>
+<li><strong>forgot to detach logp_old 和 logp_ref</strong> → 它们是常量，<strong>不应</strong>有梯度，否则 ref 模型会被错误更新。</li>
+<li><strong>mask 没乘 prompt 部分</strong> → prompt 的 log-prob 本就是常数（与 <span class="math math-inline">$\theta$</span> 无关），算了等于白噪声混进梯度；<strong>只对 generation 部分计算</strong>。</li>
+<li><strong>adv 没广播到 token 维</strong>：outcome supervision 下 token 维所有 advantage 相同，记得 <code>expand</code>。</li>
+<li><strong><code>policy_old</code> 没同步</strong>：每个 outer step 后必须 <code>π_old ← π_θ</code>，否则 ratio 永远是 1。</li>
+<li><strong><code>G</code> 选太小</strong>（&lt; 8）→ baseline 噪声主导，训练不稳。</li>
+<li><strong>reward 全相同的 group 不处理</strong> → 即使 <code>+1e-8</code>，adv 也接近 0；可选 drop。</li>
+<li><strong>process 版本 advantage 写成&quot;step reward 自身&quot;</strong> → 必须是&quot;后续 step 的累加&quot;（reward-to-go），不要漏 <span class="math math-inline">$\sum_{\text{index}(j)\ge t}$</span>。</li>
+<li><strong>token-level vs sequence-level mean</strong> 实现要清楚自己在哪条路线上（论文式 (3) 是 sequence-level；DAPO/Dr.GRPO 是 token-level）。</li>
+<li><strong>多 epoch (<span class="math math-inline">$\mu>1$</span>) 时</strong>：所有 <code>logp_old</code> 必须用最初 rollout 时的版本，不要中途刷新。</li>
+<li><strong>rollout 阶段省 vLLM</strong>：<span class="math math-inline">$G=64 \times$</span> batch=1024 = 65k 条采样，用 HF generate 会让训练 idle 大半时间，强烈建议 vLLM。</li>
+</ul>
+</div>
+</div>
+<h3 id="8.2-典型超参（GRPO-+-LLM）">8.2 典型超参（GRPO + LLM）</h3>
+<table>
+<thead>
+<tr>
+<th>超参</th>
+<th>典型值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math math-inline">$G$</span>（group size）</td>
+<td>16~64（DeepSeekMath: 64；社区复现 R1-zero 常用 16）</td>
+</tr>
+<tr>
+<td><span class="math math-inline">$\varepsilon$</span>（clip）</td>
+<td>0.2</td>
+</tr>
+<tr>
+<td><span class="math math-inline">$\beta$</span>（KL）</td>
+<td>0.001 ~ 0.04（推理任务可以更小，甚至 0）</td>
+</tr>
+<tr>
+<td>policy lr</td>
+<td>1e-6 ~ 5e-6</td>
+</tr>
+<tr>
+<td>内层 epoch <span class="math math-inline">$\mu$</span></td>
+<td>1（论文）；社区常用 1~4</td>
+</tr>
+<tr>
+<td>max gen len</td>
+<td>1024 ~ 32768（R1 用了非常长的）</td>
+</tr>
+<tr>
+<td>ref 同步频率</td>
+<td>每个 outer iteration 同步一次</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9.-一图总览">9. 一图总览</h2>
+<pre><code class="language-dot">digraph GRPO {
+  rankdir=TB; node [shape=box, style=&quot;rounded,filled&quot;, fillcolor=&quot;#f0f4ff&quot;, fontname=&quot;Helvetica&quot;];
+
+  PPO       [label=&quot;PPO（标准 RLHF）\nactor + critic V_φ\n+ ref + reward model&quot;];
+  Pain      [label=&quot;痛点\n• critic 与 actor 同规模 → 显存翻倍\n• reward 只在 EOS → 难训准 V\n• token-level value 监督几乎为 0&quot;, fillcolor=&quot;#ffe4e1&quot;];
+
+  RLOO      [label=&quot;RLOO 思路\nleave-one-out 组内 baseline&quot;, fillcolor=&quot;#fff4d6&quot;];
+  Group     [label=&quot;对每个 prompt 采 G 条\n→ 用 reward 均值/std 当 baseline\n（组内 MC 估 V(q)）&quot;, fillcolor=&quot;#fff4d6&quot;];
+  k3        [label=&quot;k3 KL 估计器\nπ_ref/π_θ − log(π_ref/π_θ) − 1\n单样本 ≥ 0、无偏、低方差&quot;, fillcolor=&quot;#fff4d6&quot;];
+
+  Adv       [label=&quot;Â_{i,t} = z-score(r_i)\n（outcome：token 共享）\n（process：后续 step 累加）&quot;];
+
+  GRPO      [label=&quot;GRPO\nPPO-Clip × 组内 advantage\n+ k3 KL 直加 loss\n（删掉 critic）&quot;, fillcolor=&quot;#ffd6d6&quot;];
+
+  Iter      [label=&quot;Iterative GRPO\n• ref ← π_θ\n• r_φ 持续训练 + 10% replay&quot;, fillcolor=&quot;#d6ffd6&quot;];
+
+  Variants  [label=&quot;后续修正\nDAPO / Dr.GRPO\n（length bias / token-level mean）&quot;, fillcolor=&quot;#d6ffd6&quot;];
+
+  PPO -&gt; Pain;
+  Pain -&gt; Group;
+  RLOO -&gt; Group;
+  Group -&gt; Adv;
+  k3 -&gt; GRPO;
+  Adv -&gt; GRPO;
+  PPO -&gt; GRPO [label=&quot;保留 Clip 框架&quot;, style=dashed];
+  GRPO -&gt; Iter;
+  GRPO -&gt; Variants;
+}
+</code></pre>
+<p><strong>配色约定</strong>：浅红=痛点；浅蓝=起点；浅黄=关键 trick；红=本章核心算法；浅绿=下游/迭代框架。</p>
+<hr />
+<h2 id="10.-关联笔记">10. 关联笔记</h2>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">笔记状态说明</span></div>
+  <div class="callout-body"><p>✅ 已存在的本地教程；🆕 = 待补的笔记（双链先挂着，等后续单独整理）。</p>
+</div>
+</div>
+<ul>
+<li>上游：
+<ul>
+<li>✅ <span class="wikilink" data-target="PPO教程" title="PPO教程">PPO</span> —— GRPO 直接继承的目标骨架（ratio + clip）</li>
+<li>✅ <span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span> —— baseline 的&quot;减常数不改期望&quot;是 GRPO 合法性的根</li>
+<li>✅ <span class="wikilink" data-target="Actor-Critic教程" title="Actor-Critic教程">Actor-Critic</span> —— GRPO = &quot;把 critic 替换成组内 MC baseline&quot; 的 actor-critic</li>
+<li>🆕 <span class="wikilink" data-target="REINFORCE" title="REINFORCE">REINFORCE</span> —— <span class="math math-inline">$G=1$</span>、无 clip、无 KL 时 GRPO 退化为 REINFORCE-with-baseline（核心推导已在 <span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span> §3-§4 涵盖，可暂引彼处）</li>
+</ul>
+</li>
+<li>平行：
+<ul>
+<li>🆕 <span class="wikilink" data-target="GAE" title="GAE">GAE</span> —— PPO 的优势估计标配，被 GRPO 用&quot;组内 z-score&quot;替代</li>
+<li>🆕 <span class="wikilink" data-target="KL散度" title="KL散度">KL散度</span> —— k1/k2/k3 估计器、为什么 GRPO 选 k3</li>
+<li>🆕 <span class="wikilink" data-target="RLOO" title="RLOO">RLOO</span> —— &quot;leave-one-out 组内 baseline&quot;，GRPO 思路前身</li>
+<li>🆕 <span class="wikilink" data-target="RLHF" title="RLHF">RLHF</span> —— GRPO 的应用场景（reward model + policy 训练范式）</li>
+</ul>
+</li>
+<li>下游 / 变体：
+<ul>
+<li>🆕 <span class="wikilink" data-target="DAPO" title="DAPO">DAPO</span> —— 字节 2025，token-level mean、动态 sample 重加权、解决 length bias</li>
+<li>🆕 <span class="wikilink" data-target="Dr.GRPO" title="Dr.GRPO">Dr.GRPO</span> —— Sea AI Lab 2025（外部团队对 GRPO 的批评/修正），主要去掉 length normalization <span class="math math-inline">$\frac{1}{|o_i|}$</span> 与 reward std 归一化造成的 bias</li>
+<li>✅ <span class="wikilink" data-target="DPO教程" title="DPO教程">DPO</span> —— offline preference 学习，GRPO 的离线对照（论文 §5.2.1 unified paradigm）</li>
+<li>DeepSeek-R1（<a href="https://arxiv.org/abs/2501.12948" target="_blank" rel="noopener noreferrer">arXiv 2501.12948</a>）—— GRPO 在大规模 reasoning 上的工业实证</li>
+</ul>
+</li>
+<li>原文：<a href="https://arxiv.org/abs/2402.03300" target="_blank" rel="noopener noreferrer">DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models（arXiv 2402.03300）</a></li>
+</ul>
+
+</main>
+</body>
+</html>

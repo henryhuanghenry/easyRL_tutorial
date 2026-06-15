@@ -1,0 +1,722 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DPO（Direct Preference Optimization）教程</title>
+  <link rel="stylesheet" href="_assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3/lib/viz-standalone.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async function () {
+      // 1. highlight.js — only on blocks that opted in via language-XXX class
+      try {
+        document.querySelectorAll('pre code').forEach(function (block) {
+          if (block.classList.contains('language-dot')) return;
+          if (block.classList.contains('language-mermaid')) return;
+          // Skip auto-detect on un-tagged blocks (e.g. ASCII diagrams) — hljs
+          // mis-classifies short text and recolours it badly.
+          var hasLang = false;
+          for (var i = 0; i < block.classList.length; i++) {
+            if (block.classList[i].indexOf('language-') === 0) { hasLang = true; break; }
+          }
+          if (!hasLang) return;
+          window.hljs && window.hljs.highlightElement(block);
+        });
+      } catch (e) { console.warn('hljs failed', e); }
+
+      // 2. Graphviz: replace <pre><code class="language-dot"> with rendered SVG
+      try {
+        if (window.Viz && typeof window.Viz.instance === 'function') {
+          const vizInstance = await window.Viz.instance();
+          document.querySelectorAll('pre code.language-dot').forEach(function (block) {
+            try {
+              const svg = vizInstance.renderSVGElement(block.textContent);
+              const wrapper = document.createElement('div');
+              wrapper.className = 'graphviz';
+              wrapper.appendChild(svg);
+              block.parentElement.replaceWith(wrapper);
+            } catch (err) {
+              console.error('viz render failed', err);
+              block.parentElement.classList.add('graphviz-error');
+            }
+          });
+        } else {
+          console.warn('viz-js not loaded');
+        }
+      } catch (e) { console.warn('viz init failed', e); }
+
+      // 3. Mermaid
+      try {
+        if (window.mermaid) {
+          window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+          await window.mermaid.run({ querySelector: 'pre.mermaid' });
+        }
+      } catch (e) { console.warn('mermaid failed', e); }
+
+      // 4. KaTeX last so it does not fight hljs/viz
+      try {
+        if (window.renderMathInElement) {
+          window.renderMathInElement(document.body, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$',  right: '$',  display: false }
+            ],
+            throwOnError: false,
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+          });
+        }
+      } catch (e) { console.warn('katex failed', e); }
+    });
+  </script>
+</head>
+<body>
+<header class="meta">
+  <h1 class="doc-title">DPO（Direct Preference Optimization）教程</h1>
+  <div class="meta-row">
+    <span class="meta-tags"><span class="meta-tag">#强化学习</span><span class="meta-tag">#RLHF</span><span class="meta-tag">#偏好学习</span><span class="meta-tag">#DPO</span><span class="meta-tag">#大语言模型</span></span>
+    <span class="meta-source">来源：<a href="https://arxiv.org/abs/2305.18290">https://arxiv.org/abs/2305.18290</a></span>
+    <span class="meta-date">2026-06-15</span>
+  </div>
+</header>
+
+<main class="doc">
+<h1 id="DPO（Direct-Preference-Optimization）">DPO（Direct Preference Optimization）</h1>
+<div class="callout callout-abstract" style="border-left-color:#7c3aed; background:#7c3aed14;">
+  <div class="callout-title"><span class="callout-icon">📋</span><span class="callout-title-text">一句话</span></div>
+  <div class="callout-body"><p>DPO = <strong>把 RLHF 的&quot;训 reward model + PPO 强化学习&quot;两阶段合成一阶段</strong> —— 通过对 KL 约束 RL 目标的闭式解做反代换，把&quot;奖励差值&quot;重写成&quot;策略对 reference 的 log-ratio 差值&quot;，partition function 在差值中天然消去，最终训练目标退化为一个<strong>类似二分类的 sigmoid 极大似然损失</strong>，无需采样、无需 reward model、无需 RL，依然在优化原 RLHF 目标。</p>
+</div>
+</div>
+<hr />
+<h2 id="1.-背景：RLHF-三段式有多痛">1. 背景：RLHF 三段式有多痛</h2>
+<h3 id="1.1-经典-RLHF-流水线（Ziegler/Stiennon/Ouyang-系列）">1.1 经典 RLHF 流水线（Ziegler/Stiennon/Ouyang 系列）</h3>
+<pre><code>SFT  →  Reward Model（用偏好数据训 BT 二分类）  →  PPO（KL 约束下最大化 RM 给的奖励）
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>输入</th>
+<th>输出</th>
+<th>优化对象</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1. SFT</td>
+<td>高质量示范 <span class="math math-inline">$(x,y)$</span></td>
+<td><span class="math math-inline">$\pi^{\text{SFT}}$</span></td>
+<td>next-token CE</td>
+</tr>
+<tr>
+<td>2. 奖励建模</td>
+<td>人工偏好 <span class="math math-inline">$(x,y_w,y_l)$</span></td>
+<td><span class="math math-inline">$r_\phi$</span> 标量打分</td>
+<td>BT 极大似然</td>
+</tr>
+<tr>
+<td>3. RL 微调</td>
+<td><span class="math math-inline">$\pi^{\text{SFT}}$</span>、<span class="math math-inline">$r_\phi$</span></td>
+<td>对齐策略 <span class="math math-inline">$\pi_\theta$</span></td>
+<td><span class="math math-inline">$\max\mathbb E[r_\phi]-\beta\mathrm{KL}$</span>，PPO 求解</td>
+</tr>
+</tbody>
+</table>
+<h3 id="1.2-这套管线的痛点">1.2 这套管线的痛点</h3>
+<div class="callout callout-danger" style="border-left-color:#ef4444; background:#ef444414;">
+  <div class="callout-title"><span class="callout-icon">🔥</span><span class="callout-title-text">RLHF 的工程负担</span></div>
+  <div class="callout-body"><ol>
+<li><strong>要训两个独立模型</strong>：<span class="math math-inline">$r_\phi$</span>（reward）+ <span class="math math-inline">$\pi_\theta$</span>（policy），同时还要 reference <span class="math math-inline">$\pi_{\text{ref}}$</span> 和 critic value head，4 份模型权重在内存里互相竞争（工程上 reward/critic 常<strong>共享底座</strong>、ref 也可与 policy <strong>共享 LoRA base</strong>，所以&quot;4 份独立模型&quot;是逻辑上的角色数，实际显存占用未必真等于 4 份完整模型）</li>
+<li><strong>PPO 阶段不稳定</strong>：on-policy 采样 + 高方差 + reward hacking + 过大 KL 走偏，超参敏感（学习率/clip <span class="math math-inline">$\varepsilon$</span>/KL 系数/熵奖励/value coef）</li>
+<li><strong>要在线采样</strong>：训练循环里每步都要让 <span class="math math-inline">$\pi_\theta$</span> 生成、过 RM 打分，文本生成本身就是慢操作</li>
+<li><strong>reward model 是个有偏代理</strong>：<span class="math math-inline">$r_\phi$</span> 在 OOD 上往往误判，导致 PPO 优化&quot;刷 reward 而非真的对齐&quot;</li>
+</ol>
+</div>
+</div>
+<h3 id="1.3-DPO-的核心动机">1.3 DPO 的核心动机</h3>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">aha moment</span></div>
+  <div class="callout-body"><p>既然 PPO 阶段在解的是&quot;KL 约束下最大化 reward&quot;这个有<strong>闭式最优解</strong>的凸问题，那为何不<strong>直接用闭式解反代换 reward</strong>，把整个三段式压缩成一个监督式分类损失？
+数学上，DPO 证明：BT 偏好模型 + KL 约束 RL 目标 → 二者一组合，partition function 消失，留下一个完全用 <span class="math math-inline">$\pi_\theta/\pi_{\text{ref}}$</span> 表达的 sigmoid loss。</p>
+</div>
+</div>
+<h3 id="1.4-路线图">1.4 路线图</h3>
+<pre><code>KL 约束 RL 目标  →（闭式解）→  π* ∝ π_ref · exp(r/β)
+                                ↓ 反解 r
+                          r = β log(π*/π_ref) + β log Z(x)
+                                ↓ 代入 BT 偏好模型
+                          σ(r_w - r_l)  ← log Z(x) 在差值中消失！
+                                ↓ 用 πθ 替代 π*，写成 NLL
+                          DPO loss
+</code></pre>
+<hr />
+<h2 id="2.-形式化定义">2. 形式化定义</h2>
+<h3 id="2.1-偏好数据集">2.1 偏好数据集</h3>
+<div class="math math-block">
+$$
+\mathcal D = \bigl\{\,(x^{(i)},\,y_w^{(i)},\,y_l^{(i)})\,\bigr\}_{i=1}^N,\quad y_w \succ y_l \mid x
+$$
+</div>
+<p>每条数据：同一 prompt <span class="math math-inline">$x$</span> 下，人类标注员选出&quot;更好的&quot; <span class="math math-inline">$y_w$</span>（chosen）与&quot;更差的&quot; <span class="math math-inline">$y_l$</span>（rejected）。</p>
+<h3 id="2.2-Bradley-Terry-偏好模型">2.2 Bradley-Terry 偏好模型</h3>
+<p>人类偏好概率被假设由一个<strong>潜在 reward</strong> <span class="math math-inline">$r^*(x,y)$</span> 通过 logistic 函数生成：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+p^*(y_1\succ y_2\mid x)
+= \frac{\exp(r^*(x,y_1))}{\exp(r^*(x,y_1))+\exp(r^*(x,y_2))}
+= \sigma\bigl(r^*(x,y_1)-r^*(x,y_2)\bigr)
+\;}\tag{1}
+$$
+</div>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">BT 模型的关键性质：只看差值</span></div>
+  <div class="callout-body"><p><span class="math math-inline">$\sigma(r_1-r_2)$</span> 中的 reward 只以<strong>差值</strong>形式出现 → 任何只在 <span class="math math-inline">$x$</span> 上加常数的 reward <span class="math math-inline">$r'(x,y)=r(x,y)+f(x)$</span> 都给出<strong>同一个偏好分布</strong>。这种<strong>等价类的 under-specification</strong> 正是 DPO 推导能 work 的几何根源（详见 §6.1 Theorem 1）。</p>
+</div>
+</div>
+<h3 id="2.3-RLHF-第三阶段的-RL-目标（KL-约束最大化）">2.3 RLHF 第三阶段的 RL 目标（KL 约束最大化）</h3>
+<div class="math math-block">
+$$
+\boxed{\;
+\max_{\pi_\theta}\ \mathbb E_{x\sim\mathcal D,\,y\sim\pi_\theta(\cdot\mid x)}\bigl[r(x,y)\bigr]
+\;-\;\beta\,\mathbb D_{\mathrm{KL}}\bigl(\pi_\theta(y\mid x)\,\|\,\pi_{\text{ref}}(y\mid x)\bigr)
+\;}\tag{3}
+$$
+</div>
+<ul>
+<li><span class="math math-inline">$\beta$</span>：KL 强度系数（论文默认 <span class="math math-inline">$\beta=0.1$</span>；TL;DR 实验用 <span class="math math-inline">$\beta=0.5$</span>）</li>
+<li><span class="math math-inline">$\pi_{\text{ref}}$</span>：通常就是 <span class="math math-inline">$\pi^{\text{SFT}}$</span></li>
+<li>KL 项的作用：防止策略偏离 ref 太远（避免 mode collapse + 让 reward 在 ref 附近的分布上保持准确）</li>
+</ul>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">PPO 在解什么问题，要看清</span></div>
+  <div class="callout-body"><p>PPO 阶段不是在&quot;自由地最大化 reward&quot;，是在解式 (3) 这个<strong>带 KL 约束</strong>的凸优化。这个问题事实上有<strong>闭式解</strong> —— DPO 的全部魔法都基于这一点。</p>
+</div>
+</div>
+<hr />
+<h2 id="3.-推导：从-KL-约束-RL-到-DPO-loss">3. 推导：从 KL 约束 RL 到 DPO loss</h2>
+<h3 id="Step-1-·-求-KL-约束目标的闭式最优解">Step 1 · 求 KL 约束目标的闭式最优解</h3>
+<p>把式 (3) 改写为 KL 形式（注意符号方向）。对任意 <span class="math math-inline">$r$</span>：</p>
+<div class="math math-block">
+$$
+\begin{aligned}
+\max_\pi \mathbb E_y[r] - \beta\mathrm{KL}(\pi\|\pi_{\text{ref}})
+&= \max_\pi \mathbb E_y\!\left[r(x,y)-\beta\log\frac{\pi(y\mid x)}{\pi_{\text{ref}}(y\mid x)}\right] \\
+&= \min_\pi \mathbb E_y\!\left[\log\frac{\pi(y\mid x)}{\pi_{\text{ref}}(y\mid x)}-\frac1\beta r(x,y)\right]
+\end{aligned}
+$$
+</div>
+<p>把 <span class="math math-inline">$\frac1\beta r$</span> 凑进 log 里：</p>
+<div class="math math-block">
+$$
+= \min_\pi \mathbb E_y\!\left[\log\frac{\pi(y\mid x)}{\frac1{Z(x)}\pi_{\text{ref}}(y\mid x)\exp(\frac1\beta r(x,y))} - \log Z(x)\right]
+$$
+</div>
+<p>其中<strong>配分函数（partition function）</strong></p>
+<div class="math math-block">
+$$
+Z(x) \;\triangleq\; \sum_{y}\pi_{\text{ref}}(y\mid x)\exp\!\Bigl(\tfrac1\beta r(x,y)\Bigr)
+$$
+</div>
+<p>仅依赖 <span class="math math-inline">$x$</span>，与 <span class="math math-inline">$\pi$</span> 无关。定义</p>
+<div class="math math-block">
+$$
+\pi^*(y\mid x) \;\triangleq\; \frac{1}{Z(x)}\,\pi_{\text{ref}}(y\mid x)\,\exp\!\Bigl(\tfrac1\beta r(x,y)\Bigr) \tag{4}
+$$
+</div>
+<p>可验证 <span class="math math-inline">$\pi^*$</span> 是合法概率分布（非负且对 <span class="math math-inline">$y$</span> 求和为 1）。则</p>
+<div class="math math-block">
+$$
+\min_\pi \mathbb E_x\bigl[\,\mathrm{KL}(\pi\,\|\,\pi^*) - \log Z(x)\,\bigr]
+$$
+</div>
+<p><span class="math math-inline">$\log Z(x)$</span> 与 <span class="math math-inline">$\pi$</span> 无关，由 Gibbs 不等式 <span class="math math-inline">$\mathrm{KL}\ge 0$</span>（取等当且仅当两分布相同），最优解就是</p>
+<div class="math math-block">
+$$
+\boxed{\;
+\pi^*(y\mid x) = \frac{1}{Z(x)}\,\pi_{\text{ref}}(y\mid x)\,\exp\!\Bigl(\tfrac1\beta r(x,y)\Bigr)
+\;}\tag{4}
+$$
+</div>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">闭式解的物理含义</span></div>
+  <div class="callout-body"><p>最优策略 = ref 策略<strong>再加一层 reward exponential tilt</strong>。<span class="math math-inline">$\beta$</span> 越大→ tilt 越温和（更靠近 ref）；<span class="math math-inline">$\beta$</span> 越小→ tilt 越激进（更追求高 reward）。
+这一结论本身在 RLHF 里早就众所周知（见 Peters &amp; Schaal 的 reward-weighted regression、Levine 的 control-as-inference 综述），但<strong>之前从未被用作训练目标的反代换工具</strong>。</p>
+</div>
+</div>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">但闭式解直接用不了</span></div>
+  <div class="callout-body"><p><span class="math math-inline">$Z(x)=\sum_y \pi_{\text{ref}}\exp(r/\beta)$</span> 是对<strong>整个词序列空间</strong>求和（指数级），LM 场景下根本算不出来。这就是为什么之前必须走 PPO 这种<strong>采样近似</strong>的路线。
+DPO 的关键不是&quot;算出 <span class="math math-inline">$Z(x)$</span>&quot;，而是&quot;<strong>让 <span class="math math-inline">$Z(x)$</span> 在最终 loss 里消失</strong>&quot;。</p>
+</div>
+</div>
+<hr />
+<h3 id="Step-2-·-反解-reward：把-写成-的函数">Step 2 · 反解 reward：把 <span class="math math-inline">$r$</span> 写成 <span class="math math-inline">$\pi^*$</span> 的函数</h3>
+<p>对式 (4) 两边取 <span class="math math-inline">$\log$</span>，整理：</p>
+<div class="math math-block">
+$$
+\log\pi^*(y\mid x) = \log\pi_{\text{ref}}(y\mid x) + \tfrac1\beta r(x,y) - \log Z(x)
+$$
+</div>
+<p>移项：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+r(x,y) \;=\; \beta\log\frac{\pi^*(y\mid x)}{\pi_{\text{ref}}(y\mid x)} \;+\; \beta\log Z(x)
+\;}\tag{5}
+$$
+</div>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">这是整个 DPO 的支点</span></div>
+  <div class="callout-body"><p>式 (5) 说：&quot;<strong>任何</strong>与该 reward 相容的最优策略 <span class="math math-inline">$\pi^*$</span>，都可以反过来表达 reward&quot;。换言之：<strong>reward 函数和最优策略一一对应（在等价类意义上）</strong>。
+既然如此，我们就别再去&quot;训练 reward model&quot;了 —— 直接把&quot;训练策略&quot;等价为&quot;训练 reward&quot;。</p>
+</div>
+</div>
+<hr />
+<h3 id="Step-3-·-代入-BT-模型-→-partition-function-自动消失">Step 3 · 代入 BT 模型 → partition function 自动消失</h3>
+<p>把式 (5) 的 <span class="math math-inline">$r^*(x,y)$</span> 代入式 (1) 的 BT 偏好概率：</p>
+<div class="math math-block">
+$$
+\begin{aligned}
+p^*(y_w\succ y_l\mid x)
+&= \sigma\bigl(r^*(x,y_w)-r^*(x,y_l)\bigr) \\[4pt]
+&= \sigma\Bigl(
+   \beta\log\tfrac{\pi^*(y_w\mid x)}{\pi_{\text{ref}}(y_w\mid x)}+\beta\log Z(x)
+   - \beta\log\tfrac{\pi^*(y_l\mid x)}{\pi_{\text{ref}}(y_l\mid x)} - \beta\log Z(x)
+   \Bigr) \\[4pt]
+&= \sigma\Bigl(
+   \beta\log\tfrac{\pi^*(y_w\mid x)}{\pi_{\text{ref}}(y_w\mid x)}
+   - \beta\log\tfrac{\pi^*(y_l\mid x)}{\pi_{\text{ref}}(y_l\mid x)}
+   \Bigr)
+\end{aligned}\tag{6}
+$$
+</div>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">关键 aha moment：<span class="math math-inline">$\log Z(x)$</span> 在差值中消去！</span></div>
+  <div class="callout-body"><p><span class="math math-inline">$Z(x)$</span> 只依赖 <span class="math math-inline">$x$</span>，对同一 prompt 下的 <span class="math math-inline">$y_w$</span> 与 <span class="math math-inline">$y_l$</span> 是<strong>同一个常数</strong>。BT 模型只看 reward 的差值，于是 <span class="math math-inline">$\beta\log Z(x)$</span> 在 <span class="math math-inline">$r_w-r_l$</span> 中互相抵消 —— 整个表达式<strong>只剩下 <span class="math math-inline">$\pi^*$</span> 与 <span class="math math-inline">$\pi_{\text{ref}}$</span></strong>，再不需要那个算不出来的 <span class="math math-inline">$Z(x)$</span>。
+这正是 §2.2 我们提到的&quot;BT 等价类 under-specification&quot;在数学上的回报：因为 BT 只能识别 reward 的差值（等价类），所以&quot;加一项 <span class="math math-inline">$\log Z(x)$</span>&quot;在 BT 视角下就是无意义的，自然被吸收掉。</p>
+</div>
+</div>
+<hr />
+<h3 id="Step-4-·-写成极大似然损失（DPO-loss）">Step 4 · 写成极大似然损失（DPO loss）</h3>
+<p>把 <span class="math math-inline">$\pi^*$</span> 替换成可学习的 <span class="math math-inline">$\pi_\theta$</span>，对偏好数据集 <span class="math math-inline">$\mathcal D$</span> 做负对数似然：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+\mathcal L_{\text{DPO}}(\pi_\theta;\pi_{\text{ref}})
+=
+-\mathbb E_{(x,y_w,y_l)\sim\mathcal D}
+\!\left[\,
+\log\sigma\!\left(
+\beta\log\frac{\pi_\theta(y_w\mid x)}{\pi_{\text{ref}}(y_w\mid x)}
+-
+\beta\log\frac{\pi_\theta(y_l\mid x)}{\pi_{\text{ref}}(y_l\mid x)}
+\right)
+\,\right]
+\;}\tag{7}
+$$
+</div>
+<p>形式上完全等同于一个<strong>带温度的二分类 logistic 回归</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>监督信号</th>
+<th>&quot;logit&quot;</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math math-inline">$y_w$</span> 优于 <span class="math math-inline">$y_l$</span></td>
+<td>label = 1</td>
+<td><span class="math math-inline">$\beta\bigl[\log\tfrac{\pi_\theta(y_w\mid x)}{\pi_{\text{ref}}(y_w\mid x)}-\log\tfrac{\pi_\theta(y_l\mid x)}{\pi_{\text{ref}}(y_l\mid x)}\bigr]$</span></td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-summary" style="border-left-color:#64748b; background:#64748b14;">
+  <div class="callout-title"><span class="callout-icon">📌</span><span class="callout-title-text">隐式 reward</span></div>
+  <div class="callout-body"><p>训练完成后，DPO 把策略反过来当 reward 用：
+<span class="math math-inline">$\boxed{\;\hat r_\theta(x,y) = \beta\log\frac{\pi_\theta(y\mid x)}{\pi_{\text{ref}}(y\mid x)}\;}$</span>
+论文的核心金句&quot;<strong>Your Language Model Is Secretly a Reward Model</strong>&quot;由此而来：你训练的就是一个 LM，但它<strong>同时</strong>就是它对应的最优 reward function（在 reward 等价类意义上）。</p>
+</div>
+</div>
+<hr />
+<h2 id="4.-梯度的直观解读">4. 梯度的直观解读</h2>
+<p>对式 (7) 求梯度（推导见原文 Appendix A.4，链式求导 + <span class="math math-inline">$\sigma'(x)=\sigma(x)\sigma(-x)$</span>）：</p>
+<div class="math math-block">
+$$
+\nabla_\theta\mathcal L_{\text{DPO}} = -\beta\,\mathbb E_{(x,y_w,y_l)\sim\mathcal D}\!
+\Bigl[
+\underbrace{\sigma\!\bigl(\hat r_\theta(x,y_l)-\hat r_\theta(x,y_w)\bigr)}_{\text{(A) 错得越离谱权重越大}}
+\cdot
+\bigl(\,
+\underbrace{\nabla_\theta\log\pi_\theta(y_w\mid x)}_{\text{(B) 推 chosen 概率上}}
+-
+\underbrace{\nabla_\theta\log\pi_\theta(y_l\mid x)}_{\text{(C) 推 rejected 概率下}}
+\,\bigr)
+\Bigr]
+$$
+</div>
+<p>逐项解读：</p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>含义</th>
+<th>自动机制</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>(A) <span class="math math-inline">$\sigma(\hat r_l-\hat r_w)$</span></td>
+<td>隐式 reward 把&quot;差的&quot;排在&quot;好的&quot;前面的概率</td>
+<td>模型已经排对时 ≈ 0（不更新），排错时 ≈ 1（大梯度）—— <strong>天然难例加权</strong></td>
+</tr>
+<tr>
+<td>(B) <span class="math math-inline">$\nabla\log\pi_\theta(y_w)$</span></td>
+<td>chosen 的 score function</td>
+<td>推 <span class="math math-inline">$y_w$</span> 概率 ↑</td>
+</tr>
+<tr>
+<td>(C) <span class="math math-inline">$-\nabla\log\pi_\theta(y_l)$</span></td>
+<td>rejected 的负 score</td>
+<td>推 <span class="math math-inline">$y_l$</span> 概率 ↓</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">与&quot;naive 偏好学习&quot;（Unlikelihood）的对比</span></div>
+  <div class="callout-body"><p>最朴素的偏好学习直接最大化 <span class="math math-inline">$\log\pi(y_w)$</span> + 最小化 <span class="math math-inline">$\log\pi(y_l)$</span>，<strong>没有 (A) 项的加权</strong>——这其实就是 <span class="wikilink" data-target="Unlikelihood Training" title="Unlikelihood Training">Unlikelihood Training</span> (Welleck et al. 2019) 的思路。论文 §4 末尾点出：去掉 (A) 这种动态加权后模型容易<strong>退化（degenerate）</strong>，并在 Appendix Table 3 给出 Unlikelihood 在 TL;DR 上的失败样本（&quot;when when when when...&quot; 之类的复读塌陷）作为佐证（<strong>注意 Table 3 是 Unlikelihood baseline 的 qualitative 退化样本，不是 DPO 自身去掉 (A) 项的对照消融</strong>）。
+(A) 项的本质是：当模型已经做对、隐式 reward 已分明时，<strong>别再硬推</strong>；只在还排错时才用力。这是 DPO 不会&quot;过拟合 push 方向&quot;的关键。</p>
+</div>
+</div>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">社区共识：DPO 倾向于&quot;打压 rejected&quot;而非&quot;提拔 chosen&quot;</span></div>
+  <div class="callout-body"><p>大量后续工作（IPO/SimPO 论文等）观察到：训练后 DPO 主要是<strong>把 <span class="math math-inline">$y_l$</span> 的概率压低</strong>，而不是真的把 <span class="math math-inline">$y_w$</span> 推高。一种简化解释：(B)/(C) 在 sigmoid 接近 1 时数值上对称，但 LM 的概率空间是 simplex，<strong>降一个比抬一个容易</strong>；不过 IPO/SimPO 给出的更精细诊断是 reward gap 无 bound + 长度偏置。这是 DPO 的实操坑，催生了 IPO/SimPO 等改进。</p>
+</div>
+</div>
+<hr />
+<h2 id="5.-与-RLHF-PPO-的全方位对比">5. 与 RLHF-PPO 的全方位对比</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>RLHF + PPO</th>
+<th>DPO</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>阶段数</td>
+<td>3 阶段（SFT → RM → PPO）</td>
+<td>2 阶段（SFT → DPO）</td>
+</tr>
+<tr>
+<td>训练时存活的模型</td>
+<td>4 个网络（policy / ref / reward / critic value head；工程常共享底座）</td>
+<td>2 个网络（policy + frozen ref）</td>
+</tr>
+<tr>
+<td>是否需要 reward model</td>
+<td>✅ 显式训练</td>
+<td>❌ 隐式从 <span class="math math-inline">$\pi_\theta/\pi_{\text{ref}}$</span> 读出</td>
+</tr>
+<tr>
+<td>是否需要 RL 采样</td>
+<td>✅ on-policy 采样</td>
+<td>❌ 离线偏好对，纯监督</td>
+</tr>
+<tr>
+<td>损失函数</td>
+<td>clip surrogate + value MSE + entropy + 自适应 KL</td>
+<td>单个 sigmoid NLL</td>
+</tr>
+<tr>
+<td>主要超参</td>
+<td>lr、<span class="math math-inline">$\varepsilon_{\text{clip}}$</span>、KL coef、value coef、entropy coef、GAE λ、target KL</td>
+<td><span class="math math-inline">$\beta$</span>、lr</td>
+</tr>
+<tr>
+<td>训练稳定性</td>
+<td>中（reward hacking、KL 失控、value drift）</td>
+<td>高（凸 / log-sigmoid，无方差爆炸）</td>
+</tr>
+<tr>
+<td>与原 RLHF 目标的关系</td>
+<td>用 surrogate 近似</td>
+<td>在 BT 假设下与式 (3) 最优策略<strong>理论一致</strong>（论文 §4 推导 + Theorem 1：参数化无表达力损失）</td>
+</tr>
+<tr>
+<td>推理时是否需要 ref</td>
+<td>❌（推理就是 <span class="math math-inline">$\pi_\theta$</span> forward）</td>
+<td>❌（同左，ref 只在训练时 forward）</td>
+</tr>
+<tr>
+<td>相对计算开销</td>
+<td>高（要采样 + 4 网络）</td>
+<td>低（仅 2 网络 forward，1 次 BP）</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">工程上 DPO 不止&quot;省事&quot;，还更稳</span></div>
+  <div class="callout-body"><p>论文 §6.1 Figure 2 显示：在 IMDb 情感生成上，DPO 在<strong>整条 reward-KL 边界</strong>上都严格碾压 PPO，甚至 PPO-GT（用 ground truth reward 的 PPO 上界）也输给 DPO。原因：PPO 的 advantage 估计带方差、KL 估计也带方差，DPO 直接闭式吃掉了这两块噪声。</p>
+</div>
+</div>
+<hr />
+<h2 id="6.-理论性质：DPO-不是&quot;近似&quot;，是等价">6. 理论性质：DPO 不是&quot;近似&quot;，是等价</h2>
+<h3 id="6.1-reward-等价类">6.1 reward 等价类</h3>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">Definition 1（reward 等价）</span></div>
+  <div class="callout-body"><p>两个 reward <span class="math math-inline">$r,r'$</span> 等价当且仅当 <span class="math math-inline">$r(x,y)-r'(x,y)=f(x)$</span>（差一个仅依赖于 prompt 的偏置）。</p>
+</div>
+</div>
+<p><strong>Lemma 1</strong>：BT/Plackett-Luce 框架下，等价类中所有 reward 给出<strong>同一个偏好分布</strong>（差值不变）。</p>
+<p><strong>Lemma 2</strong>：式 (3) 的 KL 约束 RL 问题下，等价类中所有 reward 给出<strong>同一个最优策略</strong>（<span class="math math-inline">$f(x)$</span> 在归一化时被吸收）。</p>
+<p><strong>Theorem 1</strong>（论文 §5.1）：在温和假设下，<strong>任何</strong>与 BT/PL 模型相容的 reward 等价类，都能被 DPO 的参数化 <span class="math math-inline">$r(x,y)=\beta\log\frac{\pi(y\mid x)}{\pi_{\text{ref}}(y\mid x)}$</span> 表示。</p>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">这意味着什么</span></div>
+  <div class="callout-body"><ol>
+<li>DPO 这种参数化<strong>不损失任何表达力</strong> —— 它能表示 BT 框架能识别的所有 reward</li>
+<li>DPO 的参数化恰好选了让 <span class="math math-inline">$\sum_y\pi_{\text{ref}}\exp(r/\beta)=1$</span>（<span class="math math-inline">$Z(x)=1$</span>）的代表元 —— 于是 reparameterization 中的 <span class="math math-inline">$\pi$</span> 直接就是该 reward 等价类下式 (3) 的最优策略，<strong>不需要额外的 RL 步骤求最优</strong></li>
+</ol>
+</div>
+</div>
+<h3 id="6.2-DPO-视角下-PPO-不稳定的根源（§5.2）">6.2 DPO 视角下 PPO 不稳定的根源（§5.2）</h3>
+<p>PPO 优化的是</p>
+<div class="math math-block">
+$$
+\mathbb E\bigl[r_\phi(x,y)\bigr] - \beta\mathrm{KL}(\pi\|\pi_{\text{ref}})
+$$
+</div>
+<p>把 ref-anchored 形式展开后等价于</p>
+<div class="math math-block">
+$$
+\max_\pi\, \mathbb E\bigl[\,\underbrace{r_\phi(x,y) - \beta\log Z(x)}_{f(r_\phi,\pi_{\text{ref}},\beta)\text{：投影后的归一化 reward}}\bigr] - \beta\mathbb E\bigl[\log\tfrac{\pi}{\pi_{\text{ref}}}\bigr]
+$$
+</div>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">PPO 必须 baseline 减偏</span></div>
+  <div class="callout-body"><p>上式中减掉的 <span class="math math-inline">$\beta\log Z(x)$</span> 是 <span class="math math-inline">$\pi_{\text{ref}}$</span> 的 <strong>soft value function</strong>（原文 §5.2 把 <span class="math math-inline">$\log Z$</span> 解读为 partition function 取对数后的归一化项，等价于 ref 策略下的 soft value），理论上不影响最优解，但<strong>实际计算策略梯度时它直接进方差</strong>。PPO 之所以普遍要&quot;用人类完成基线做单样本 MC 估计 <span class="math math-inline">$Z(x)$</span>&quot;，本质上就是在<strong>手动减掉这一项</strong>。
+DPO 直接把 <span class="math math-inline">$Z(x)$</span> 写进 reparameterization 里，自带 baseline，<strong>根本不需要 critic</strong>。</p>
+</div>
+</div>
+<hr />
+<h2 id="7.-算法流程">7. 算法流程</h2>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">DPO 训练管线</span></div>
+  <div class="callout-body"><p><strong>输入</strong>：偏好数据集 <span class="math math-inline">$\mathcal D=\{(x,y_w,y_l)\}$</span>、<span class="math math-inline">$\pi^{\text{SFT}}$</span>、超参 <span class="math math-inline">$\beta$</span></p>
+<ol>
+<li><strong>初始化</strong>：<span class="math math-inline">$\pi_\theta \leftarrow \pi^{\text{SFT}}$</span>，<span class="math math-inline">$\pi_{\text{ref}}\leftarrow\pi^{\text{SFT}}$</span>（<span class="math math-inline">$\pi_{\text{ref}}$</span> 冻结）
+<ul>
+<li>若没有 SFT model：先用 <span class="math math-inline">$y_w$</span> 做 NLL 微调（preferred-FT）作为 <span class="math math-inline">$\pi_{\text{ref}}$</span></li>
+</ul>
+</li>
+<li><strong>For</strong> each batch <span class="math math-inline">$\{(x,y_w,y_l)\}$</span> <strong>do</strong>：
+<ol>
+<li>把 <span class="math math-inline">$(x+y_w)$</span> 与 <span class="math math-inline">$(x+y_l)$</span> 拼到同一 batch，做<strong>一次</strong> policy forward，再切片得 <span class="math math-inline">$\log\pi_\theta(y_w\mid x),\,\log\pi_\theta(y_l\mid x)$</span>（response token 求和、prompt 部分 mask 掉）</li>
+<li>同样的 batch 在 ref 上做<strong>一次</strong> forward（<strong>no_grad</strong>），切片得 <span class="math math-inline">$\log\pi_{\text{ref}}(y_w\mid x),\,\log\pi_{\text{ref}}(y_l\mid x)$</span></li>
+<li>算 logits：<span class="math math-inline">$u = \beta\bigl[(\log\pi_\theta(y_w)-\log\pi_{\text{ref}}(y_w))-(\log\pi_\theta(y_l)-\log\pi_{\text{ref}}(y_l))\bigr]$</span></li>
+<li>损失：<span class="math math-inline">$\mathcal L = -\log\sigma(u)$</span></li>
+<li>反传 + 更新 <span class="math math-inline">$\theta$</span></li>
+</ol>
+</li>
+<li><strong>End</strong></li>
+</ol>
+</div>
+</div>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">log-prob 是 sequence-level</span></div>
+  <div class="callout-body"><p>这里 <span class="math math-inline">$\log\pi(y\mid x) = \sum_t\log\pi(y_t\mid x,y_{<t})$</span> —— 整条回复的所有 token log-prob <strong>求和</strong>（不是平均、不是末 token），因为 BT 模型识别的是<strong>整条回复</strong>的偏好，不是 token 级偏好。
+（后续 SimPO 改用&quot;长度归一化的 log-prob&quot;，正是要修复这一点带来的长度偏置。）</p>
+</div>
+</div>
+<hr />
+<h2 id="8.-常见变体（一句话扫盲）">8. 常见变体（一句话扫盲）</h2>
+<table>
+<thead>
+<tr>
+<th>变体</th>
+<th>改了什么</th>
+<th>动机</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="wikilink" data-target="IPO" title="IPO">IPO</span> (Identity-PO, Azar 2023)</td>
+<td>把 <span class="math math-inline">$\log\sigma$</span> 换成 squared margin loss <span class="math math-inline">$(h_\theta - \frac1{2\beta})^2$</span></td>
+<td>BT+sigmoid 在 hard label (<span class="math math-inline">$p=1$</span>) 上不饱和、无正则，DPO 易把 reject 概率推向 0；IPO 给隐式 reward 差一个显式上限</td>
+</tr>
+<tr>
+<td><span class="wikilink" data-target="KTO" title="KTO">KTO</span> (Kahneman-Tversky <strong>Optimization</strong>, Ethayarajh 2024)</td>
+<td>不需要成对 <span class="math math-inline">$(y_w,y_l)$</span>，单条 <span class="math math-inline">$(x,y,\text{good/bad})$</span> 即可</td>
+<td>偏好对难标注，KTO 用前景理论建模</td>
+</tr>
+<tr>
+<td><span class="wikilink" data-target="ORPO" title="ORPO">ORPO</span> (Hong 2024)</td>
+<td>在 SFT loss 里加一个 odds-ratio 罚项，<strong>不需要 ref model</strong></td>
+<td>一阶段、零 ref，节省显存</td>
+</tr>
+<tr>
+<td><span class="wikilink" data-target="SimPO" title="SimPO">SimPO</span> (Meng 2024)</td>
+<td>长度归一化 + reference-free margin，不再需要 <span class="math math-inline">$\pi_{\text{ref}}$</span></td>
+<td>DPO 的&quot;打压 rejected&quot; + 长度偏置问题</td>
+</tr>
+<tr>
+<td>RPO/cDPO</td>
+<td>偏好标签可能含噪，BCE → label-smoothing</td>
+<td>数据噪声鲁棒性</td>
+</tr>
+</tbody>
+</table>
+<p>DPO 之后的工程演化几乎全围绕**&quot;去掉 ref model&quot;** + <strong>&quot;修长度/规模偏置&quot;</strong> + **&quot;放宽偏好对要求&quot;**这三条主线。</p>
+<hr />
+<h2 id="9.-Cheat-Sheet">9. Cheat Sheet</h2>
+<h3 id="9.1-最小可跑-DPO-loss（基于论文-Appendix-B-的实现）">9.1 最小可跑 DPO loss（基于论文 Appendix B 的实现）</h3>
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+def dpo_loss(pi_logps, ref_logps, yw_idxs, yl_idxs, beta):
+    &quot;&quot;&quot;
+    pi_logps:  (B,) 当前策略对每条样本的 sequence log-prob（已对 token 求和）
+    ref_logps: (B,) reference 模型对同样样本的 sequence log-prob，requires_grad=False（教程注，非原版 docstring）
+    yw_idxs / yl_idxs: 长度 T 的索引张量，配对偏好对 (chosen, rejected)
+    beta: 温度，越大约束越强（论文常用 0.1，TL;DR 实验用 0.5）
+    &quot;&quot;&quot;
+    pi_yw,  pi_yl  = pi_logps[yw_idxs],  pi_logps[yl_idxs]
+    ref_yw, ref_yl = ref_logps[yw_idxs], ref_logps[yl_idxs]
+
+    pi_logratios  = pi_yw  - pi_yl                  # log π_θ(yw)/π_θ(yl)
+    ref_logratios = ref_yw - ref_yl                 # log π_ref(yw)/π_ref(yl)
+
+    losses  = -F.logsigmoid(beta * (pi_logratios - ref_logratios))
+    rewards = beta * (pi_logps - ref_logps).detach()  # 隐式 reward，监控用
+
+    # 论文 Appendix B 原版返回 per-sample 的 losses 张量，由外层 .mean()；这里教程便利起见直接 .mean()
+    return losses.mean(), rewards
+</code></pre>
+<h3 id="9.2-训练循环骨架">9.2 训练循环骨架</h3>
+<pre><code class="language-python">ref_model.eval()                                      # ref 永远 frozen
+for batch in loader:
+    # batch: prompt + chosen + rejected, 已 tokenize 拼好
+    with torch.no_grad():
+        ref_logps = compute_seq_logp(ref_model, batch)
+    pi_logps = compute_seq_logp(policy, batch)        # 带 grad
+    loss, _  = dpo_loss(pi_logps, ref_logps,
+                        batch.yw_idx, batch.yl_idx, beta=0.1)
+    loss.backward()
+    optim.step(); optim.zero_grad()
+</code></pre>
+<p><code>compute_seq_logp</code> 关键：</p>
+<pre><code class="language-python"># logits: (B, L, V); labels: (B, L), pad 处置 -100
+logp_token = F.log_softmax(logits, dim=-1).gather(-1, labels.unsqueeze(-1)).squeeze(-1)
+mask = (labels != -100).float()                       # 只对 response 部分求和
+logp_seq  = (logp_token * mask).sum(dim=-1)           # (B,)
+</code></pre>
+<h3 id="9.3-典型超参（论文）">9.3 典型超参（论文）</h3>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math math-inline">$\beta$</span></td>
+<td>0.1（默认）/ 0.5（TL;DR 摘要）</td>
+</tr>
+<tr>
+<td>optimizer</td>
+<td>RMSprop</td>
+</tr>
+<tr>
+<td>lr</td>
+<td>1e-6</td>
+</tr>
+<tr>
+<td>warmup</td>
+<td>0 → 1e-6 over 150 steps</td>
+</tr>
+<tr>
+<td>batch size</td>
+<td>64（偏好对计）</td>
+</tr>
+<tr>
+<td>epochs</td>
+<td>通常 1（论文未显式给出，社区常用值）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="9.4-常见坑">9.4 常见坑</h3>
+<div class="callout callout-summary" style="border-left-color:#64748b; background:#64748b14;">
+  <div class="callout-title"><span class="callout-icon">📌</span><span class="callout-title-text">DPO 实操踩坑清单</span></div>
+  <div class="callout-body"><ul>
+<li><strong><span class="math math-inline">$\beta$</span> 的两面</strong>：太大（如 5）→ 几乎不偏离 ref，学不到东西；太小（如 0.01）→ 自由度过大、ref 锚失效，模型可能崩成只会复读 chosen。论文扫了 <span class="math math-inline">$\{0.05, 0.1, 1, 5\}$</span>，0.1 是甜点</li>
+<li><strong>必须保留 ref model</strong>：训练时 ref 要 forward 一次（占 ≈ 1 倍策略显存），常见做法：用 LoRA 训练时 ref = base 模型，policy = base + LoRA，<strong>共享同一份 base 权重，关掉 adapter 就是 ref</strong>，省一份显存</li>
+<li><strong>log-prob 是 sequence-level（按 token 求和），不是末 token、不是平均</strong>。写错 → ratio 量纲错、<span class="math math-inline">$\beta$</span> 失效</li>
+<li><strong>chosen 与 rejected 必须共享同一个 prompt <span class="math math-inline">$x$</span></strong>：BT 模型的差值消去 <span class="math math-inline">$\log Z(x)$</span> 的前提就是同 prompt。混 prompt 的 pair 损坏整个推导</li>
+<li><strong>mask response-only</strong>：prompt 部分的 log-prob 不应进入 loss（prompt 是条件，不是被预测的目标），否则 ratio 包含 prompt 项，<span class="math math-inline">$Z(x)$</span> 不再消失</li>
+<li><strong>rejected 易塌陷而非 chosen 提升</strong>：训练曲线常见 <code>reward_chosen</code> 缓升、<code>reward_rejected</code> 急跌。社区诊断：用 IPO 或 SimPO 替代；或加 SFT 正则 <span class="math math-inline">$-\alpha\log\pi_\theta(y_w\mid x)$</span>（即 <span class="wikilink" data-target="ORPO" title="ORPO">ORPO</span> 思路）防 chosen 塌陷</li>
+<li><strong>数值稳定</strong>：用 <code>F.logsigmoid</code> 而不是 <code>log(sigmoid(...))</code>，否则 <span class="math math-inline">$u$</span> 大时下溢。对应在监控 <code>reward_margin = β(logratio_w - logratio_l)</code> 时也别 exp</li>
+<li><strong>偏好数据要 in-distribution</strong>：BT 假设偏好由 <span class="math math-inline">$\pi^{\text{SFT}}$</span> 采样的回复打上，若直接拿别人模型的 <span class="math math-inline">$(y_w,y_l)$</span> 训自己的 ref，分布偏移会让 (A) 项加权失真</li>
+<li><strong>ref 不要用未微调的 base</strong>：必须先 SFT（或 preferred-FT）。直接用 base + DPO 等价于&quot;在大噪声起点附近做凸化&quot;，效果差</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="10.-一图总览">10. 一图总览</h2>
+<pre><code class="language-dot">digraph DPO {
+  rankdir=TB;
+  node [shape=box, style=&quot;rounded,filled&quot;, fillcolor=&quot;#f0f4ff&quot;, fontname=&quot;Helvetica&quot;];
+
+  rlhf    [label=&quot;RLHF 经典三段式\nSFT → 训 RM → PPO\n(4 模型 + 在线采样)&quot;];
+  pain    [label=&quot;痛点\n· RM 是噪声代理\n· PPO 不稳 / 高方差\n· 4 套权重 + 在线 rollout&quot;, fillcolor=&quot;#ffe4e1&quot;];
+  obj     [label=&quot;KL 约束 RL 目标\nmax E[r] - β·KL(π‖π_ref)&quot;];
+  closed  [label=&quot;闭式最优解\nπ*(y|x) = (1/Z(x))·π_ref·exp(r/β)&quot;, fillcolor=&quot;#fff4d6&quot;];
+  zhard   [label=&quot;Z(x) 是词序列空间求和\n→ 直接算不出来&quot;, fillcolor=&quot;#ffe4e1&quot;];
+  invert  [label=&quot;反解 reward\nr(x,y) = β·log(π*/π_ref) + β·log Z(x)&quot;, fillcolor=&quot;#fff4d6&quot;];
+  bt      [label=&quot;代入 BT 偏好模型\np(yw≻yl) = σ(r_w - r_l)&quot;];
+  cancel  [label=&quot;aha moment\nlog Z(x) 在差值中消去！&quot;, fillcolor=&quot;#fff4d6&quot;];
+  loss    [label=&quot;DPO loss\n-log σ( β·(log(π_θ/π_ref)|_yw\n          - log(π_θ/π_ref)|_yl) )&quot;, fillcolor=&quot;#d6ffd6&quot;];
+  impl    [label=&quot;隐式 reward\nr̂_θ(x,y) = β·log(π_θ/π_ref)\n→ LM 自己就是 RM&quot;, fillcolor=&quot;#d6ffd6&quot;];
+  done    [label=&quot;DPO 算法\n2 阶段 / 2 模型 / 监督 NLL\n无 RM、无 PPO、无在线采样&quot;, fillcolor=&quot;#ffd6d6&quot;];
+
+  rlhf -&gt; pain -&gt; obj;
+  obj  -&gt; closed -&gt; zhard;
+  closed -&gt; invert -&gt; bt -&gt; cancel -&gt; loss;
+  loss -&gt; impl;
+  loss -&gt; done;
+  zhard -&gt; invert [style=dashed, label=&quot;不需要算 Z\n只需在差值中消去&quot;];
+}
+</code></pre>
+<hr />
+<h2 id="11.-关联笔记">11. 关联笔记</h2>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">笔记状态说明</span></div>
+  <div class="callout-body"><p>✅ 已存在的本地教程；🆕 = 待补的笔记（双链先挂着，等后续单独整理）。</p>
+</div>
+</div>
+<ul>
+<li>✅ <span class="wikilink" data-target="PPO教程" title="PPO教程">PPO</span> —— DPO 想替代的对象；DPO 的 §5.2 用闭式视角解释了 PPO 不稳的来源</li>
+<li>🆕 <span class="wikilink" data-target="RLHF" title="RLHF">RLHF</span> —— 包含 SFT / RM / PPO 三段的整体框架；DPO 是其第 2+3 阶段的<strong>等价合并</strong></li>
+<li>🆕 <span class="wikilink" data-target="Bradley-Terry模型" title="Bradley-Terry模型">Bradley-Terry模型</span> —— DPO 偏好建模的根；BT 只识别&quot;reward 差值&quot;，正是 <span class="math math-inline">$\log Z$</span> 能消失的几何原因</li>
+<li>🆕 <span class="wikilink" data-target="KL散度" title="KL散度">KL散度</span> —— RLHF 目标的核心约束；KL 软约束的闭式解 = DPO 反代的支点</li>
+<li>✅ <span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span> —— PPO 的根，DPO 的对照面：DPO 用监督 NLL 替代了&quot;采样 + 策略梯度&quot;</li>
+<li>🆕 <span class="wikilink" data-target="IPO" title="IPO">IPO</span> —— DPO 的近似修正：把 <span class="math math-inline">$\log\sigma$</span> 换成 MSE 防止偏好饱和过拟合</li>
+<li>🆕 <span class="wikilink" data-target="KTO" title="KTO">KTO</span> —— 用前景理论摆脱&quot;必须成对偏好&quot;的限制，单 sample 即可</li>
+<li>🆕 <span class="wikilink" data-target="ORPO" title="ORPO">ORPO</span> —— SFT loss 中加 odds-ratio 罚项，<strong>不再需要 ref model</strong></li>
+<li>🆕 <span class="wikilink" data-target="SimPO" title="SimPO">SimPO</span> —— 长度归一化 + reference-free，缓解 DPO &quot;打压 rejected + 长度偏置&quot;</li>
+<li>🆕 <span class="wikilink" data-target="Plackett-Luce模型" title="Plackett-Luce模型">Plackett-Luce模型</span> —— BT 的 <span class="math math-inline">$K$</span> 路推广，DPO 在 Appendix A.3 给出对应损失</li>
+<li>🆕 <span class="wikilink" data-target="Unlikelihood Training" title="Unlikelihood Training">Unlikelihood Training</span> —— Welleck 2019，naive &quot;压低 rejected&quot; 的代表方法；DPO 的 (A) 加权项就是为了防止退化成它</li>
+<li>原文：<a href="https://arxiv.org/abs/2305.18290" target="_blank" rel="noopener noreferrer">Direct Preference Optimization: Your Language Model is Secretly a Reward Model (arXiv:2305.18290)</a></li>
+</ul>
+
+</main>
+</body>
+</html>

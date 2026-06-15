@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>连续动作下的深度 Q 网络（DQN for Continuous Action）教程</title>
+  <link rel="stylesheet" href="_assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3/lib/viz-standalone.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async function () {
+      // 1. highlight.js — only on blocks that opted in via language-XXX class
+      try {
+        document.querySelectorAll('pre code').forEach(function (block) {
+          if (block.classList.contains('language-dot')) return;
+          if (block.classList.contains('language-mermaid')) return;
+          // Skip auto-detect on un-tagged blocks (e.g. ASCII diagrams) — hljs
+          // mis-classifies short text and recolours it badly.
+          var hasLang = false;
+          for (var i = 0; i < block.classList.length; i++) {
+            if (block.classList[i].indexOf('language-') === 0) { hasLang = true; break; }
+          }
+          if (!hasLang) return;
+          window.hljs && window.hljs.highlightElement(block);
+        });
+      } catch (e) { console.warn('hljs failed', e); }
+
+      // 2. Graphviz: replace <pre><code class="language-dot"> with rendered SVG
+      try {
+        if (window.Viz && typeof window.Viz.instance === 'function') {
+          const vizInstance = await window.Viz.instance();
+          document.querySelectorAll('pre code.language-dot').forEach(function (block) {
+            try {
+              const svg = vizInstance.renderSVGElement(block.textContent);
+              const wrapper = document.createElement('div');
+              wrapper.className = 'graphviz';
+              wrapper.appendChild(svg);
+              block.parentElement.replaceWith(wrapper);
+            } catch (err) {
+              console.error('viz render failed', err);
+              block.parentElement.classList.add('graphviz-error');
+            }
+          });
+        } else {
+          console.warn('viz-js not loaded');
+        }
+      } catch (e) { console.warn('viz init failed', e); }
+
+      // 3. Mermaid
+      try {
+        if (window.mermaid) {
+          window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+          await window.mermaid.run({ querySelector: 'pre.mermaid' });
+        }
+      } catch (e) { console.warn('mermaid failed', e); }
+
+      // 4. KaTeX last so it does not fight hljs/viz
+      try {
+        if (window.renderMathInElement) {
+          window.renderMathInElement(document.body, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$',  right: '$',  display: false }
+            ],
+            throwOnError: false,
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+          });
+        }
+      } catch (e) { console.warn('katex failed', e); }
+    });
+  </script>
+</head>
+<body>
+<header class="meta">
+  <h1 class="doc-title">连续动作下的深度 Q 网络（DQN for Continuous Action）教程</h1>
+  <div class="meta-row">
+    <span class="meta-tags"><span class="meta-tag">#强化学习</span><span class="meta-tag">#DQN</span><span class="meta-tag">#连续动作</span><span class="meta-tag">#NAF</span><span class="meta-tag">#DDPG</span><span class="meta-tag">#RL</span></span>
+    <span class="meta-source">来源：<a href="https://datawhalechina.github.io/easy-rl/#/chapter8/chapter8">https://datawhalechina.github.io/easy-rl/#/chapter8/chapter8</a></span>
+    <span class="meta-date">2026-06-14</span>
+  </div>
+</header>
+
+<main class="doc">
+<h1 id="连续动作下的深度-Q-网络">连续动作下的深度 Q 网络</h1>
+<div class="callout callout-abstract" style="border-left-color:#7c3aed; background:#7c3aed14;">
+  <div class="callout-title"><span class="callout-icon">📋</span><span class="callout-title-text">一句话</span></div>
+  <div class="callout-body"><p><span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span> 在连续动作上的根本难题是 <span class="math math-inline">$a^* = \arg\max_a Q_\phi(s,a)$</span> <strong>不可解</strong>——动作不再是有限集，无法枚举。本章给出 4 条出路：<strong>(1) 采样近似 argmax</strong>、<strong>(2) 梯度上升求 <span class="math math-inline">$a^*$</span></strong>、<strong>(3) 把 Q 网络设计成解析可解的二次型（<span class="wikilink" data-target="NAF" title="NAF">NAF</span>）</strong>、<strong>(4) 干脆放弃 DQN 换 <span class="wikilink" data-target="Actor-Critic教程" title="Actor-Critic教程">Actor-Critic</span> / <span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span></strong>。前三条是&quot;在 DQN 框架内打补丁&quot;，第四条是&quot;换路线&quot;——也是工业界的最终选择。</p>
+</div>
+</div>
+<hr />
+<h2 id="1.-背景：为什么连续动作让-DQN-失效">1. 背景：为什么连续动作让 DQN 失效</h2>
+<h3 id="1.1-DQN-的&quot;决策步&quot;必须解一个-argmax">1.1 DQN 的&quot;决策步&quot;必须解一个 argmax</h3>
+<p><span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span> 学到 <span class="math math-inline">$Q_\phi(s,a)$</span> 之后，<strong>贪心策略</strong>就是</p>
+<div class="math math-block">
+$$
+\pi_\phi(s) = \underset{a}{\arg\max}\; Q_\phi(s,a) \tag{8.1}
+$$
+</div>
+<p>离散动作下这步几乎免费——网络结构 (b) 直接输出 <span class="math math-inline">$|\mathcal A|$</span> 维向量，一次 <code>argmax</code> 取下标即可。但<strong>连续动作</strong>下：</p>
+<ul>
+<li><span class="math math-inline">$\mathcal A \subseteq \mathbb R^d$</span> 是连续空间（<span class="math math-inline">$d$</span> 维方向盘角度、<span class="math math-inline">$d=50$</span> 个机器人关节角度…）</li>
+<li><span class="math math-inline">$\arg\max_a Q_\phi(s,a)$</span> 是个<strong>非凸优化问题</strong>，没有解析解</li>
+<li>每次决策都要解一次——而决策频率可能是 50Hz、100Hz</li>
+</ul>
+<h3 id="1.2-&quot;评估容易、决策难&quot;-的不对称">1.2 &quot;评估容易、决策难&quot; 的不对称</h3>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">DQN 在连续动作下的尴尬</span></div>
+  <div class="callout-body"><p>训练目标 <span class="math math-inline">$y = r + \gamma \max_{a'} Q_{\hat\phi}(s', a')$</span> 里那个 <span class="math math-inline">$\max_{a'}$</span>，<strong>离散时是查表，连续时也是 argmax</strong>。也就是说连续动作下 DQN 的痛点是双倍的：<strong>选动作要解 argmax，构造 TD 目标也要解 argmax</strong>——每个 batch、每个样本都要解。</p>
+</div>
+</div>
+<h3 id="1.3-离散-vs-连续动作场景">1.3 离散 vs 连续动作场景</h3>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>动作空间</th>
+<th>例子</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>离散</td>
+<td>有限集 <span class="math math-inline">$\mathcal A=\{a_1,\dots,a_K\}$</span></td>
+<td>雅达利（上/下/左/右/开火）、围棋落子</td>
+</tr>
+<tr>
+<td>连续低维</td>
+<td><span class="math math-inline">$\mathcal A\subseteq\mathbb R^{1\sim 6}$</span></td>
+<td>方向盘角度、油门、二轮平衡车</td>
+</tr>
+<tr>
+<td>连续高维</td>
+<td><span class="math math-inline">$\mathcal A\subseteq\mathbb R^{20\sim 100}$</span></td>
+<td>人形机器人 50 关节、机械臂 7-DoF</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">经验法则</span></div>
+  <div class="callout-body"><p><span class="math math-inline">$d \le 3$</span> 时，4 个方案中<strong>任何一个</strong>都能凑合用；<span class="math math-inline">$d \ge 10$</span> 时，方案 1（采样）和方案 2（梯度上升）的成本/精度比迅速恶化，工业界基本只剩方案 3（NAF）和方案 4（DDPG/SAC）。</p>
+</div>
+</div>
+<hr />
+<h2 id="2.-形式化问题">2. 形式化问题</h2>
+<p>设状态 <span class="math math-inline">$s\in\mathcal S$</span>，连续动作 <span class="math math-inline">$a\in\mathcal A\subseteq\mathbb R^d$</span>，神经网络 <span class="math math-inline">$Q_\phi:\mathcal S\times\mathcal A\to\mathbb R$</span>。每次决策需要</p>
+<div class="math math-block">
+$$
+a^*(s) = \underset{a\in\mathcal A}{\arg\max}\; Q_\phi(s, a) \tag{8.2}
+$$
+</div>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">这不是一个新问题，是 DQN 框架的&quot;未实现部分&quot;</span></div>
+  <div class="callout-body"><p>注意 <span class="math math-inline">$(8.2)$</span> 在 tabular 时代根本不存在——表格的 argmax 是 <span class="math math-inline">$O(|\mathcal A|)$</span> 的查表。是<strong>函数近似 + 连续动作</strong>联手催生了这个 argmax 难题。</p>
+</div>
+</div>
+<p>下面 4 节分别给一个解法。</p>
+<hr />
+<h2 id="3.-方案-1：采样-N-个动作取最大（Sampled-argmax）">3. 方案 1：采样 N 个动作取最大（Sampled argmax）</h2>
+<h3 id="3.1-思路">3.1 思路</h3>
+<p>在动作空间上<strong>均匀（或某分布上）采样 <span class="math math-inline">$N$</span> 个候选</strong>：</p>
+<div class="math math-block">
+$$
+\{a_1, a_2, \dots, a_N\} \overset{\text{iid}}{\sim} U(\mathcal A)
+$$
+</div>
+<p>把它们一次性塞进 GPU，得到 <span class="math math-inline">$N$</span> 个 Q 值，取最大：</p>
+<div class="math math-block">
+$$
+\hat a^*(s) = \underset{a_i,\, i=1..N}{\arg\max}\; Q_\phi(s, a_i) \tag{8.3}
+$$
+</div>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">为什么&quot;采样近似&quot;在工程上还能用</span></div>
+  <div class="callout-body"><p>GPU 的批处理特性使得对 <span class="math math-inline">$N$</span> 个候选动作的 Q 值评估可以在<strong>单次 forward</strong> 中完成——把状态 <span class="math math-inline">$s$</span> 复制 <span class="math math-inline">$N$</span> 份与 <span class="math math-inline">$\{a_i\}$</span> 拼接成一个 <span class="math math-inline">$(N, s\text{-dim}+a\text{-dim})$</span> 的 batch，一次推理拿到 <span class="math math-inline">$N$</span> 个 Q 值。所以采样方案的代价是 1 次 forward + <span class="math math-inline">$N$</span> 个候选评估，在 <span class="math math-inline">$N \le 10^4$</span> 时几乎和单次 forward 同量级。这是原文 8.1&quot;不会太低效&quot;那句话背后的工程依据。</p>
+</div>
+</div>
+<h3 id="3.2-优缺点">3.2 优缺点</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>评价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>实现</td>
+<td>极简——一次 batch forward</td>
+</tr>
+<tr>
+<td>速度</td>
+<td>GPU 并行下不算慢，但 <span class="math math-inline">$N$</span> 越大越慢</td>
+</tr>
+<tr>
+<td>精度</td>
+<td><strong>次优</strong>——<span class="math math-inline">$N$</span> 不够大时漏掉最优区域</td>
+</tr>
+<tr>
+<td>维度灾难</td>
+<td><span class="math math-inline">$d$</span> 维空间均匀采样 <span class="math math-inline">$N$</span> 个点，<strong>覆盖率随 <span class="math math-inline">$d$</span> 指数衰减</strong>——这是致命问题</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">维度灾难（curse of dimensionality）</span></div>
+  <div class="callout-body"><p>想用同样的&quot;密度&quot;覆盖 <span class="math math-inline">$d$</span> 维空间，所需采样数随 <span class="math math-inline">$d$</span> 指数增长。<span class="math math-inline">$d=2,N=100$</span> 还能用；<span class="math math-inline">$d\ge 6$</span> 后朴素均匀采样很快就不够分辨率，必须借助 CEM 等智能采样方案。<strong>所以方案 1 单独用只在低维（<span class="math math-inline">$d\le 3$</span>）凑合</strong>。</p>
+</div>
+</div>
+<h3 id="3.3-改进：用-CEM-/-CMA-ES-智能采样">3.3 改进：用 CEM / CMA-ES 智能采样</h3>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">进阶</span></div>
+  <div class="callout-body"><p><span class="wikilink" data-target="QT-Opt" title="QT-Opt">QT-Opt</span>（Google 2018，机器人抓取）就是用 <strong>Cross-Entropy Method</strong> 迭代式地缩小采样分布范围——先粗采样、把 top-K 拟合成新高斯、再细采样，2~3 轮就收敛。这是&quot;采样近似 argmax&quot;在工业上能用起来的关键 trick。</p>
+</div>
+</div>
+<hr />
+<h2 id="4.-方案-2：梯度上升求">4. 方案 2：梯度上升求 <span class="math math-inline">$a^*$</span></h2>
+<h3 id="4.1-思路">4.1 思路</h3>
+<p>既然 <span class="math math-inline">$a\mapsto Q_\phi(s,a)$</span> 可微（神经网络对输入可导），就<strong>把 <span class="math math-inline">$a$</span> 当参数，对 Q 做梯度上升</strong>：</p>
+<div class="math math-block">
+$$
+a^{(k+1)} = a^{(k)} + \eta\, \nabla_a Q_\phi(s, a)\big|_{a=a^{(k)}} \tag{8.4}
+$$
+</div>
+<p>迭代到收敛即得 <span class="math math-inline">$a^*$</span>。</p>
+<h3 id="4.2-优缺点">4.2 优缺点</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>评价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>精度</td>
+<td>比采样高（沿梯度走，不是盲撒点）</td>
+</tr>
+<tr>
+<td>速度</td>
+<td><strong>慢</strong>——每次决策要内层迭代 <span class="math math-inline">$K$</span> 步</td>
+</tr>
+<tr>
+<td>全局性</td>
+<td><span class="math math-inline">$Q_\phi$</span> 关于 <span class="math math-inline">$a$</span> <strong>非凸</strong>——只能找到局部极值</td>
+</tr>
+<tr>
+<td>可微性</td>
+<td>要求 <span class="math math-inline">$Q_\phi$</span> 对 <span class="math math-inline">$a$</span> 可导（神经网络天然满足）</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">naive 做法的痛点</span></div>
+  <div class="callout-body"><p>&quot;决策一次 = 跑一次内层优化&quot;——对 50Hz 控制频率（每 20ms 决一次），内层即使只迭代 10 步也吃不消。而且 TD 目标里的 <span class="math math-inline">$\max_{a'}$</span> 也要这么算，<strong>训练时每个 batch 都要在 <span class="math math-inline">$a'$</span> 上跑一轮内层梯度上升</strong>——训练时间瞬间膨胀。</p>
+</div>
+</div>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">历史地位</span></div>
+  <div class="callout-body"><p>方案 2 的思路最终演化成 <span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span>：与其每次决策都做一次内层梯度上升，<strong>不如训练一个&quot;近似 argmax 的网络&quot; <span class="math math-inline">$\mu_\theta(s) \approx \arg\max_a Q_\phi(s,a)$</span></strong>——这就是 actor。决策时直接 <span class="math math-inline">$a = \mu_\theta(s)$</span>，是常数时间。<strong>DDPG = 把方案 2 的内层优化&quot;摊销&quot;到一个 actor 网络里</strong>。</p>
+</div>
+</div>
+<hr />
+<h2 id="5.-方案-3：设计-Q-网络让-argmax-解析可解（NAF）">5. 方案 3：设计 Q 网络让 argmax 解析可解（NAF）</h2>
+<h3 id="5.1-核心思路：把-Q-写成关于-的二次型">5.1 核心思路：把 Q 写成关于 <span class="math math-inline">$a$</span> 的二次型</h3>
+<p>如图 8.1（原文图），输入状态 <span class="math math-inline">$s$</span> 后，网络输出<strong>三件套</strong>：</p>
+<ul>
+<li><span class="math math-inline">$\boldsymbol\mu(s)\in\mathbb R^d$</span>：动作均值向量</li>
+<li><span class="math math-inline">$\boldsymbol\Sigma(s)\in\mathbb R^{d\times d}$</span>：正定的&quot;形状/曲率&quot;矩阵（即 NAF 论文里的 <span class="math math-inline">$P(s)$</span>，控制 Q 在 <span class="math math-inline">$a$</span> 维度上的下凹程度，本质不是协方差也不是精度矩阵）</li>
+<li><span class="math math-inline">$V(s)\in\mathbb R$</span>：状态价值</li>
+</ul>
+<p>Q 函数定义为：</p>
+<div class="math math-block">
+$$
+\boxed{\;Q_\phi(s,a) \;=\; -\big(a-\boldsymbol\mu(s)\big)^{\!\top}\boldsymbol\Sigma(s)\big(a-\boldsymbol\mu(s)\big) \;+\; V(s)\;} \tag{8.5}
+$$
+</div>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">与 NAF 论文的小差别</span></div>
+  <div class="callout-body"><p>NAF 原论文 (Gu et al. 2016) 写的是 <span class="math math-inline">$-\frac12(a-\mu)^\top P(a-\mu)+V$</span>，多一个 <span class="math math-inline">$\frac12$</span> 系数。这个系数可以吸收进 <span class="math math-inline">$\boldsymbol\Sigma$</span> 内部，不影响最优解 <span class="math math-inline">$a^*=\mu(s)$</span> 的形式，所以 easyrl 原文与本教程都省略——读论文时注意一致即可。</p>
+</div>
+</div>
+<p><img src="https://datawhalechina.github.io/easy-rl/img/ch8/8.2.png" alt="原文图 8.1 方案 3：设计网络架构" />
+<em>图 8.1 · NAF 网络结构示意：输入 <span class="math math-inline">$s$</span>，输出 <span class="math math-inline">$\mu(s),\Sigma(s),V(s)$</span> 三件套（<a href="https://datawhalechina.github.io/easy-rl/#/chapter8/chapter8" target="_blank" rel="noopener noreferrer">Easy-RL 第 8 章</a>）</em></p>
+<h3 id="5.2-为什么-argmax-立刻可解">5.2 为什么 argmax 立刻可解</h3>
+<p><span class="math math-inline">$\boldsymbol\Sigma(s)$</span> 是正定矩阵 <span class="math math-inline">$\Rightarrow$</span> 二次型 <span class="math math-inline">$(a-\mu)^\top\Sigma(a-\mu)\ge 0$</span>，前面带负号，所以这一项<strong>最大值为 0</strong>，且取最大值时</p>
+<div class="math math-block">
+$$
+a-\boldsymbol\mu(s) = \mathbf 0 \;\Longleftrightarrow\; \boxed{\;a^*(s) = \boldsymbol\mu(s)\;} \tag{8.6}
+$$
+</div>
+<p>代入 <span class="math math-inline">$(8.5)$</span> 立得 <span class="math math-inline">$Q_\phi(s, a^*) = V(s)$</span>——这正是状态价值的语义。</p>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">aha moment</span></div>
+  <div class="callout-body"><p>这个设计把&quot;求 argmax&quot;直接绑到了网络的输出上：<strong><span class="math math-inline">$\mu(s)$</span> 既是参数，又是 argmax 的解</strong>。决策时一次前向，读 <span class="math math-inline">$\mu$</span> 即可；构造 TD 目标的 <span class="math math-inline">$\max_{a'} Q(s',a')$</span> 也变成一次前向读 <span class="math math-inline">$V(s')$</span>——和离散 DQN 一样快。</p>
+</div>
+</div>
+<h3 id="5.3-正定性如何保证：Cholesky-参数化">5.3 正定性如何保证：Cholesky 参数化</h3>
+<p><span class="math math-inline">$\boldsymbol\Sigma(s)$</span> 不能让网络&quot;裸输出&quot;——非对称、非正定都不行。NAF 的工程做法：</p>
+<ol>
+<li>网络输出一个 <span class="math math-inline">$d(d+1)/2$</span> 维向量，组装成<strong>下三角矩阵</strong> <span class="math math-inline">$\boldsymbol L(s)$</span></li>
+<li>强制对角线为正（用 <code>softplus</code> 或 <code>exp</code>）</li>
+<li>令</li>
+</ol>
+<div class="math math-block">
+$$
+\boldsymbol\Sigma(s) = \boldsymbol L(s)\,\boldsymbol L(s)^{\!\top} \tag{8.7}
+$$
+</div>
+<p><span class="math math-inline">$\boldsymbol L\boldsymbol L^\top$</span> 永远半正定；对角正 <span class="math math-inline">$\Rightarrow$</span> 严格正定。这就是 <strong>Cholesky 分解参数化</strong>。</p>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">为什么不直接输出 <span class="math math-inline">$\Sigma$</span></span></div>
+  <div class="callout-body"><p>直接输出 <span class="math math-inline">$d^2$</span> 个元素 + 对称化 + 加单位阵保证正定，<strong>约束太复杂、训练不稳定</strong>。Cholesky 用 <span class="math math-inline">$d(d+1)/2$</span> 个无约束实数就能描述任意正定矩阵，是天然参数化。</p>
+</div>
+</div>
+<h3 id="5.4-Dueling-视角">5.4 Dueling 视角</h3>
+<p><span class="math math-inline">$(8.5)$</span> 可改写为 <span class="math math-inline">$Q(s,a) = A(s,a) + V(s)$</span>，其中 <span class="math math-inline">$A(s,a) = -(a-\mu)^\top\Sigma(a-\mu) \le 0$</span> 是<strong>优势函数</strong>——这正是 <span class="wikilink" data-target="Dueling DQN" title="Dueling DQN">Dueling DQN</span> 的 <span class="math math-inline">$Q = A + V$</span> 分解，只是 NAF 用解析的二次型表达 <span class="math math-inline">$A$</span>。</p>
+<h3 id="5.5-优缺点">5.5 优缺点</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>评价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>argmax</td>
+<td><strong>解析可解</strong>——<span class="math math-inline">$O(1)$</span> 取 <span class="math math-inline">$\mu(s)$</span></td>
+</tr>
+<tr>
+<td>速度</td>
+<td>决策、训练目标都和离散 DQN 同速</td>
+</tr>
+<tr>
+<td>表达力</td>
+<td><strong>受限</strong>——Q 关于 <span class="math math-inline">$a$</span> 必须是二次型，单峰、严格凹</td>
+</tr>
+<tr>
+<td>多模态最优</td>
+<td>表达不了（真实 Q 可能有多个局部极值）</td>
+</tr>
+<tr>
+<td>高维动作</td>
+<td><span class="math math-inline">$\Sigma$</span> 是 <span class="math math-inline">$d\times d$</span>，<span class="math math-inline">$d$</span> 大时参数膨胀，但仍可控</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">表达力是天花板</span></div>
+  <div class="callout-body"><p>NAF 假设最优 Q 在每个 <span class="math math-inline">$s$</span> 下关于 <span class="math math-inline">$a$</span> <strong>单峰、二次</strong>——这是很强的假设。比如机械臂&quot;绕障&quot;任务，绕左和绕右两条路径 Q 值都很高，是双峰；NAF 强行拟合成单峰，就会找出一个折中的&quot;穿障&quot;动作，明显次优。<strong>这是 NAF 在 SOTA 排行榜上输给 DDPG/SAC 的根本原因</strong>。</p>
+</div>
+</div>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">论文出处</span></div>
+  <div class="callout-body"><p>NAF（Normalized Advantage Functions）由 Gu, Lillicrap et al. 2016 提出（<a href="https://arxiv.org/abs/1603.00748" target="_blank" rel="noopener noreferrer">Continuous Deep Q-Learning with Model-based Acceleration</a>）。</p>
+</div>
+</div>
+<hr />
+<h2 id="6.-方案-4：放弃-DQN，改走-Actor-Critic-/-DDPG">6. 方案 4：放弃 DQN，改走 Actor-Critic / DDPG</h2>
+<h3 id="6.1-核心承认：DQN-不适合连续动作">6.1 核心承认：DQN 不适合连续动作</h3>
+<p>前三个方案都在试图&quot;修补 DQN&quot;，但每一种都付了代价（精度、速度、表达力）。最干脆的选择是：<strong>改换一条路线</strong>。</p>
+<h3 id="6.2-Actor-Critic：基于价值-+-基于策略-的融合">6.2 <span class="wikilink" data-target="Actor-Critic教程" title="Actor-Critic教程">Actor-Critic</span>：基于价值 + 基于策略 的融合</h3>
+<p>引入<strong>两个网络</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>网络</th>
+<th>角色</th>
+<th>输出</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Actor <span class="math math-inline">$\pi_\theta(a\mid s)$</span></td>
+<td>演员，决定动作</td>
+<td>动作（连续/离散都可）</td>
+</tr>
+<tr>
+<td>Critic <span class="math math-inline">$Q_\phi(s,a)$</span> 或 <span class="math math-inline">$V_\phi(s)$</span></td>
+<td>评论员，评估动作</td>
+<td>标量价值</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Actor 直接输出动作 → 跳过 argmax</strong>。Critic 提供低方差的策略梯度信号（替代 <span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span> 中的 MC 回报 <span class="math math-inline">$G_t$</span>）。</p>
+<h3 id="6.3-DDPG：DQN-的连续动作版">6.3 <span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span>：DQN 的连续动作版</h3>
+<p>DDPG = <strong>Deep Deterministic Policy Gradient</strong>。本质：<strong>DPG 定理（Silver 2014）提供确定性策略的梯度计算方式 + DQN 的工程稳定化方案（replay buffer + target network）</strong>——两者融合用于连续动作：</p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>DQN</th>
+<th>DDPG</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>网络</td>
+<td><span class="math math-inline">$Q_\phi$</span> 一个</td>
+<td><span class="math math-inline">$\mu_\theta$</span>（actor） + <span class="math math-inline">$Q_\phi$</span>（critic） 两个</td>
+</tr>
+<tr>
+<td>决策</td>
+<td><span class="math math-inline">$\arg\max_a Q$</span></td>
+<td><span class="math math-inline">$a = \mu_\theta(s)$</span>（<strong>actor 近似 argmax</strong>）</td>
+</tr>
+<tr>
+<td>目标网络</td>
+<td><span class="math math-inline">$Q_{\hat\phi}$</span></td>
+<td><span class="math math-inline">$\mu_{\hat\theta}, Q_{\hat\phi}$</span> 各一份</td>
+</tr>
+<tr>
+<td>经验回放</td>
+<td>是</td>
+<td>是</td>
+</tr>
+<tr>
+<td>探索</td>
+<td><span class="math math-inline">$\varepsilon$</span>-greedy</td>
+<td>动作上加噪声（OU / Gaussian）</td>
+</tr>
+<tr>
+<td>软更新</td>
+<td>硬同步（每 C 步）</td>
+<td><strong>Polyak 软更新</strong> <span class="math math-inline">$\hat\phi\leftarrow\tau\phi+(1-\tau)\hat\phi$</span></td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">DDPG 的本质</span></div>
+  <div class="callout-body"><p><strong>训练一个 actor 网络去近似 <span class="math math-inline">$\arg\max_a Q_\phi(s,a)$</span></strong>——这正是方案 2&quot;梯度上升&quot;的网络化、摊销化版本。Actor 的训练目标是</p>
+</div>
+</div>
+<div class="math math-block">
+$$
+\nabla_\theta J(\theta) = \mathbb E_{s\sim\rho^\mu}\big[\nabla_\theta\, Q_\phi(s, \mu_\theta(s))\big]
+= \mathbb E_{s\sim\rho^\mu}\big[\nabla_a Q_\phi(s,a)\big|_{a=\mu_\theta(s)}\cdot \nabla_\theta \mu_\theta(s)\big]
+\tag{8.8}
+$$
+</div>
+<p>这就是 <strong>deterministic policy gradient</strong> 定理（Silver et al. 2014）：actor 沿着&quot;提升 Q 的方向&quot;更新。其中 <span class="math math-inline">$\rho^\mu$</span> 是 actor 自身策略下的状态分布；DDPG off-policy 实现里实际用 replay buffer 的状态近似（<span class="math math-inline">$\rho^\beta$</span>），这一近似偏差也是后续 <span class="wikilink" data-target="TD3" title="TD3">TD3</span> / <span class="wikilink" data-target="SAC" title="SAC">SAC</span> 反复讨论的点。</p>
+<h3 id="6.4-后续演化">6.4 后续演化</h3>
+<p><span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span> → <span class="wikilink" data-target="TD3" title="TD3">TD3</span>（Twin Delayed DDPG，双 critic 缓解 Q 高估）→ <span class="wikilink" data-target="SAC" title="SAC">SAC</span>（Soft Actor-Critic，加最大熵正则提升探索 / 鲁棒性）。这条线是<strong>连续动作 RL 的工业主流</strong>。</p>
+<p><img src="https://datawhalechina.github.io/easy-rl/img/ch8/8.3.png" alt="原文图 8.2 方案 4：不使用深度Q网络" />
+<em>图 8.2 · 基于策略（PPO）+ 基于价值（DQN）= 演员-评论员（<a href="https://datawhalechina.github.io/easy-rl/#/chapter8/chapter8" target="_blank" rel="noopener noreferrer">Easy-RL 第 8 章</a>）</em></p>
+<hr />
+<h2 id="7.-四方案对比">7. 四方案对比</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>方案 1 采样</th>
+<th>方案 2 梯度上升</th>
+<th>方案 3 NAF</th>
+<th>方案 4 DDPG/AC</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>决策时复杂度</td>
+<td><span class="math math-inline">$O(N)$</span> 一次 batch</td>
+<td><span class="math math-inline">$O(K)$</span> 内层迭代</td>
+<td><span class="math math-inline">$O(1)$</span> 读 <span class="math math-inline">$\mu(s)$</span></td>
+<td><span class="math math-inline">$O(1)$</span> 读 <span class="math math-inline">$\mu_\theta(s)$</span></td>
+</tr>
+<tr>
+<td>训练目标 argmax</td>
+<td>同采样</td>
+<td>同梯度上升</td>
+<td>解析（读 <span class="math math-inline">$V$</span>）</td>
+<td>通过 actor 近似</td>
+</tr>
+<tr>
+<td>精度</td>
+<td>低（次优）</td>
+<td>中（局部极值）</td>
+<td>中（受二次型限制）</td>
+<td>高（actor 可拟合复杂多峰）</td>
+</tr>
+<tr>
+<td>高维动作 (<span class="math math-inline">$d\ge 10$</span>)</td>
+<td>维度灾难</td>
+<td>慢</td>
+<td>参数 <span class="math math-inline">$d^2$</span>，可控</td>
+<td>可扩展（actor 任意架构）</td>
+</tr>
+<tr>
+<td>多模态最优</td>
+<td>可（采到就行）</td>
+<td>不行（单点收敛）</td>
+<td><strong>不行</strong>（强单峰）</td>
+<td>单 actor 也是单峰，但可扩展到多 actor</td>
+</tr>
+<tr>
+<td>工程稳定性</td>
+<td>简单</td>
+<td>较难调</td>
+<td>中（Cholesky 实现细节）</td>
+<td>中（target + soft update + 噪声）</td>
+</tr>
+<tr>
+<td>工业落地</td>
+<td>玩具 / 低维</td>
+<td>罕见</td>
+<td>学术 / 简单连续控制</td>
+<td><strong>工业主流</strong>（机器人、自动驾驶）</td>
+</tr>
+<tr>
+<td>算法代表</td>
+<td>采样 + CEM (<span class="wikilink" data-target="QT-Opt" title="QT-Opt">QT-Opt</span>)</td>
+<td>iLQR-style 内层优化</td>
+<td><span class="wikilink" data-target="NAF" title="NAF">NAF</span></td>
+<td><span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span> / <span class="wikilink" data-target="TD3" title="TD3">TD3</span> / <span class="wikilink" data-target="SAC" title="SAC">SAC</span></td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-summary" style="border-left-color:#64748b; background:#64748b14;">
+  <div class="callout-title"><span class="callout-icon">📌</span><span class="callout-title-text">选型法则</span></div>
+  <div class="callout-body"><ul>
+<li><strong>离散 + 中维</strong>：DQN</li>
+<li><strong>连续 + 低维 + 单峰</strong>：NAF</li>
+<li><strong>连续 + 任意维 + 多模态</strong>：DDPG / TD3 / SAC（首选）</li>
+<li><strong>采样 / 梯度上升</strong>这两条路在现代 RL 里基本只作为&quot;理解 DQN→DDPG 演化的中间形态&quot;出现，单独使用几乎绝迹</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="8.-Cheat-Sheet">8. Cheat Sheet</h2>
+<h3 id="8.1-NAF-最小代码（PyTorch-风格）">8.1 NAF 最小代码（PyTorch 风格）</h3>
+<pre><code class="language-python">import torch, torch.nn as nn, torch.nn.functional as F
+
+class NAFNet(nn.Module):
+    def __init__(self, s_dim, a_dim, h=256):
+        super().__init__()
+        self.a_dim = a_dim
+        self.body = nn.Sequential(nn.Linear(s_dim, h), nn.ReLU(),
+                                  nn.Linear(h, h), nn.ReLU())
+        self.mu_head = nn.Linear(h, a_dim)               # μ(s)
+        self.V_head  = nn.Linear(h, 1)                   # V(s)
+        self.L_head  = nn.Linear(h, a_dim*(a_dim+1)//2)  # 下三角的 d(d+1)/2 个元素
+
+    def decide(self, s):
+        &quot;&quot;&quot;决策路径：只前向到 μ(s) 即可，跳过 Σ 的组装，省时间。&quot;&quot;&quot;
+        h = self.body(s)
+        return self.mu_head(h)                            # (B, d)
+
+    def forward(self, s, a):
+        &quot;&quot;&quot;训练路径：返回 (Q, mu, V) 三件套。&quot;&quot;&quot;
+        h  = self.body(s)
+        mu = self.mu_head(h)                              # (B, d)
+        V  = self.V_head(h)                               # (B, 1)
+
+        # 组装下三角 L，对角线 softplus 保证正（device 必须跟随 s，否则 GPU 会崩）
+        B, d = mu.shape
+        L = torch.zeros(B, d, d, device=s.device, dtype=s.dtype)
+        tril_idx = torch.tril_indices(d, d, device=s.device)
+        L[:, tril_idx[0], tril_idx[1]] = self.L_head(h)
+        diag = torch.arange(d, device=s.device)
+        L[:, diag, diag] = F.softplus(L[:, diag, diag])   # 对角线 &gt; 0
+        Sigma = L @ L.transpose(-1, -2)                   # (B, d, d) 严格正定
+
+        # Q = -(a-μ)ᵀ Σ (a-μ) + V
+        diff = (a - mu).unsqueeze(-1)                     # (B, d, 1)
+        adv  = -diff.transpose(-1, -2) @ Sigma @ diff     # (B, 1, 1)
+        Q    = adv.squeeze(-1) + V                        # (B, 1)
+        return Q, mu, V
+
+# 训练目标（离散 DQN 的 max_a&#x27; Q(s&#x27;,a&#x27;) 直接换成 V(s&#x27;)）：
+# y = r + γ * (1 - done) * V_target(s&#x27;)
+</code></pre>
+<h3 id="8.2-常见坑">8.2 常见坑</h3>
+<div class="callout callout-summary" style="border-left-color:#64748b; background:#64748b14;">
+  <div class="callout-title"><span class="callout-icon">📌</span><span class="callout-title-text">提交前自查</span></div>
+  <div class="callout-body"><ul>
+<li><strong>正定性</strong>：<span class="math math-inline">$\Sigma$</span> 必须严格正定。<strong>NAF 原论文用 <code>exp</code> 处理对角线</strong>，工程实践常换成更稳的 <code>softplus</code>（exp 易爆炸 / 梯度消失）；想更稳就加 <span class="math math-inline">$\Sigma\leftarrow\Sigma+\epsilon I$</span>（<span class="math math-inline">$\epsilon\sim 10^{-3}$</span>）兜底</li>
+<li><strong>下三角索引</strong>：<code>torch.tril_indices(d,d)</code> 给出 <span class="math math-inline">$(2, d(d+1)/2)$</span>，按这个顺序填 <code>L_head</code> 的输出，行列别填反</li>
+<li><strong>决策 vs 训练两条路径</strong>：决策只前向到 <span class="math math-inline">$\mu$</span>，不要算 <span class="math math-inline">$\Sigma$</span>（省时间）；只有训练算 Q 时才需要装 <span class="math math-inline">$\Sigma$</span></li>
+<li><strong>TD 目标的 <span class="math math-inline">$\max$</span> 直接读 <span class="math math-inline">$V_\text{target}(s')$</span></strong>——这是 NAF 最大的便利，<strong>别再去采样或梯度上升求 max</strong></li>
+<li><strong>方案 1（采样）的 <span class="math math-inline">$N$</span> 要随 <span class="math math-inline">$d$</span> 涨</strong>：<span class="math math-inline">$d=1$</span> 用 <span class="math math-inline">$N=64$</span>，<span class="math math-inline">$d=6$</span> 至少 <span class="math math-inline">$N=10^4$</span>，否则形同盲猜</li>
+<li><strong>方案 2（梯度上升）每个 batch 都要做</strong>——构造 TD target 时 <span class="math math-inline">$\max_{a'}$</span> 也要内层优化，训练时间 × <span class="math math-inline">$K$</span> 倍</li>
+<li><strong>NAF 单峰限制</strong>：如果发现训练曲线在某些任务上 plateau 远低于 DDPG/SAC，先怀疑是不是任务最优策略多模态——不是的话再调超参</li>
+<li><strong>DDPG 探索</strong>：actor 是确定性的，<strong>不加噪声完全不探索</strong>——常用 OU 噪声 (<span class="math math-inline">$\sigma\sim 0.2$</span>) 或 Gaussian (<span class="math math-inline">$\sigma\sim 0.1$</span>)；评估时关噪声。注意：这里的 <span class="math math-inline">$\sigma$</span> 是相对于动作满量程的相对值，<strong>前提是动作已归一化到 <span class="math math-inline">$[-1,1]$</span></strong>——未归一化时（如方向盘 <span class="math math-inline">$[-30^\circ, 30^\circ]$</span>）需要按比例缩放</li>
+<li><strong>DDPG 软更新系数</strong>：<span class="math math-inline">$\tau\sim 0.005$</span> 是经典值，不要用 DQN 那种硬同步（连续动作下硬同步训练极不稳）</li>
+<li><strong>概念混淆</strong>：DDPG <strong>不是</strong>&quot;在 DQN 里解 argmax&quot;——它是&quot;训练 actor <span class="math math-inline">$\mu_\theta$</span> 去<strong>近似</strong> argmax&quot;。这两个描述差一个网络，差很远</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="9.-一图总览">9. 一图总览</h2>
+<pre><code class="language-dot">digraph CDQN {
+  rankdir=TB;
+  node [shape=box, style=&quot;rounded,filled&quot;, fontname=&quot;Helvetica&quot;];
+
+  起点 [label=&quot;DQN 学到 Q_φ(s,a) 后\n决策需要 a* = argmax_a Q(s,a)&quot;, fillcolor=&quot;#f0f4ff&quot;];
+  痛点 [label=&quot;连续动作 a∈ℝ^d\nargmax 非凸、无解析解\nTD target 的 max_a&#x27; 也同病&quot;, fillcolor=&quot;#fff4d6&quot;];
+
+  起点 -&gt; 痛点;
+
+  P1 [label=&quot;方案 1: 采样 N 个动作\n取最大\n（CEM 改进 → QT-Opt）&quot;];
+  P2 [label=&quot;方案 2: 把 a 当参数\n做梯度上升\n→ 局部最优 + 慢&quot;];
+  P3 [label=&quot;方案 3: NAF\nQ = -(a-μ)ᵀΣ(a-μ) + V\n解析 argmax = μ(s)&quot;, fillcolor=&quot;#d6ffd6&quot;];
+  P4 [label=&quot;方案 4: 换路线\nActor-Critic / DDPG\nactor μ_θ ≈ argmax_a Q&quot;, fillcolor=&quot;#d6ffd6&quot;];
+
+  痛点 -&gt; P1; 痛点 -&gt; P2; 痛点 -&gt; P3; 痛点 -&gt; P4;
+
+  限1 [label=&quot;维度灾难 + 精度低\n仅低维凑合&quot;, fillcolor=&quot;#ffe6e6&quot;];
+  限2 [label=&quot;每决策 O(K) 内层迭代\n每 batch 也要 ×K&quot;, fillcolor=&quot;#ffe6e6&quot;];
+  限3 [label=&quot;Q 关于 a 必须二次型\n单峰、严格凹&quot;, fillcolor=&quot;#ffe6e6&quot;];
+  优4 [label=&quot;actor 任意架构\n多模态扩展容易&quot;];
+
+  P1 -&gt; 限1; P2 -&gt; 限2; P3 -&gt; 限3; P4 -&gt; 优4;
+
+  DDPG [label=&quot;DDPG = 把方案 2 的内层优化\n摊销到一个 actor 网络\n→ TD3 / SAC（工业主流）&quot;, fillcolor=&quot;#ffd6d6&quot;, penwidth=2];
+  优4 -&gt; DDPG;
+  P2 -&gt; DDPG [label=&quot;网络化 / 摊销&quot;, style=dashed, fontname=&quot;Helvetica&quot;];
+}
+</code></pre>
+<hr />
+<h2 id="10.-关联笔记">10. 关联笔记</h2>
+<ul>
+<li><span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span>：本章的起点——离散动作下的标准做法</li>
+<li><span class="wikilink" data-target="Dueling DQN" title="Dueling DQN">Dueling DQN</span>：<span class="math math-inline">$Q = A + V$</span> 的分解，NAF 的二次型 advantage 是其连续动作版</li>
+<li><span class="wikilink" data-target="NAF" title="NAF">NAF</span>（Normalized Advantage Function）：方案 3 的论文名（Gu et al. 2016）</li>
+<li><span class="wikilink" data-target="Actor-Critic教程" title="Actor-Critic教程">Actor-Critic</span>：方案 4 的总框架——价值 + 策略两条腿走路</li>
+<li><span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span>：连续动作的&quot;DQN 替身&quot;——用 actor 网络 <span class="math math-inline">$\mu_\theta(s)$</span> <strong>近似</strong>（不是解析求解）<span class="math math-inline">$\arg\max_a Q_\phi(s,a)$</span></li>
+<li><span class="wikilink" data-target="TD3" title="TD3">TD3</span>：DDPG + 双 critic + 延迟更新 + 目标策略平滑，缓解 Q 过估计</li>
+<li><span class="wikilink" data-target="SAC" title="SAC">SAC</span>：最大熵 actor-critic，连续动作 RL 的当前 SOTA</li>
+<li><span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span>：方案 4 的&quot;基于策略&quot;那条腿</li>
+<li><span class="wikilink" data-target="PPO教程" title="PPO教程">PPO</span>：on-policy 的策略梯度代表，连续动作下的另一主流</li>
+<li><span class="wikilink" data-target="QT-Opt" title="QT-Opt">QT-Opt</span>：方案 1 + CEM 的工业实例（Google 机器人抓取）</li>
+</ul>
+<p><strong>原文</strong>：<a href="https://datawhalechina.github.io/easy-rl/#/chapter8/chapter8" target="_blank" rel="noopener noreferrer">Easy-RL · Chapter 8 针对连续动作的深度Q网络</a></p>
+
+</main>
+</body>
+</html>

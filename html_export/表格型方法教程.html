@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>表格型方法（Tabular Methods）高密度教程</title>
+  <link rel="stylesheet" href="_assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3/lib/viz-standalone.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async function () {
+      // 1. highlight.js — only on blocks that opted in via language-XXX class
+      try {
+        document.querySelectorAll('pre code').forEach(function (block) {
+          if (block.classList.contains('language-dot')) return;
+          if (block.classList.contains('language-mermaid')) return;
+          // Skip auto-detect on un-tagged blocks (e.g. ASCII diagrams) — hljs
+          // mis-classifies short text and recolours it badly.
+          var hasLang = false;
+          for (var i = 0; i < block.classList.length; i++) {
+            if (block.classList[i].indexOf('language-') === 0) { hasLang = true; break; }
+          }
+          if (!hasLang) return;
+          window.hljs && window.hljs.highlightElement(block);
+        });
+      } catch (e) { console.warn('hljs failed', e); }
+
+      // 2. Graphviz: replace <pre><code class="language-dot"> with rendered SVG
+      try {
+        if (window.Viz && typeof window.Viz.instance === 'function') {
+          const vizInstance = await window.Viz.instance();
+          document.querySelectorAll('pre code.language-dot').forEach(function (block) {
+            try {
+              const svg = vizInstance.renderSVGElement(block.textContent);
+              const wrapper = document.createElement('div');
+              wrapper.className = 'graphviz';
+              wrapper.appendChild(svg);
+              block.parentElement.replaceWith(wrapper);
+            } catch (err) {
+              console.error('viz render failed', err);
+              block.parentElement.classList.add('graphviz-error');
+            }
+          });
+        } else {
+          console.warn('viz-js not loaded');
+        }
+      } catch (e) { console.warn('viz init failed', e); }
+
+      // 3. Mermaid
+      try {
+        if (window.mermaid) {
+          window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+          await window.mermaid.run({ querySelector: 'pre.mermaid' });
+        }
+      } catch (e) { console.warn('mermaid failed', e); }
+
+      // 4. KaTeX last so it does not fight hljs/viz
+      try {
+        if (window.renderMathInElement) {
+          window.renderMathInElement(document.body, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$',  right: '$',  display: false }
+            ],
+            throwOnError: false,
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+          });
+        }
+      } catch (e) { console.warn('katex failed', e); }
+    });
+  </script>
+</head>
+<body>
+<header class="meta">
+  <h1 class="doc-title">表格型方法（Tabular Methods）高密度教程</h1>
+  <div class="meta-row">
+    <span class="meta-tags"><span class="meta-tag">#强化学习</span><span class="meta-tag">#表格型方法</span><span class="meta-tag">#Sarsa</span><span class="meta-tag">#Q-learning</span><span class="meta-tag">#蒙特卡洛</span><span class="meta-tag">#时序差分</span><span class="meta-tag">#RL</span></span>
+    <span class="meta-source">来源：<a href="https://datawhalechina.github.io/easy-rl/#/chapter3/chapter3">https://datawhalechina.github.io/easy-rl/#/chapter3/chapter3</a></span>
+    <span class="meta-date">2026-06-14</span>
+  </div>
+</header>
+
+<main class="doc">
+<h1 id="表格型方法（Tabular-Methods）">表格型方法（Tabular Methods）</h1>
+<div class="callout callout-abstract" style="border-left-color:#7c3aed; background:#7c3aed14;">
+  <div class="callout-title"><span class="callout-icon">📋</span><span class="callout-title-text">一句话</span></div>
+  <div class="callout-body"><p><strong>表格型方法</strong>用一张 <span class="math math-inline">$|\mathcal S|\times|\mathcal A|$</span> 的查找表 <span class="math math-inline">$Q(s,a)$</span> 显式存放每个状态-动作对的价值，通过<strong>采样</strong>（MC）或<strong>自举</strong>（TD）反复更新表项，再用 <span class="math math-inline">$\varepsilon$</span>-greedy 改进策略。它是值函数方法的&quot;原型&quot;——当状态空间爆炸时，把这张表换成神经网络近似，就得到了 <span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span> 这类<strong>函数逼近</strong>方法。</p>
+</div>
+</div>
+<hr />
+<h2 id="1.-背景：MDP、模型与表格策略">1. 背景：MDP、模型与表格策略</h2>
+<h3 id="1.1-马尔可夫决策过程（MDP）">1.1 马尔可夫决策过程（MDP）</h3>
+<p>强化学习是<strong>带决策的序列预测</strong>。环境用四元组 <span class="math math-inline">$(\mathcal S, \mathcal A, P, R)$</span> 描述（加 <span class="math math-inline">$\gamma$</span> 即五元组）：</p>
+<table>
+<thead>
+<tr>
+<th>符号</th>
+<th>含义</th>
+<th>关键性质</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math math-inline">$\mathcal S$</span></td>
+<td>状态空间</td>
+<td>表格行</td>
+</tr>
+<tr>
+<td><span class="math math-inline">$\mathcal A$</span></td>
+<td>动作空间</td>
+<td>表格列</td>
+</tr>
+<tr>
+<td><span class="math math-inline">$P(s'\mid s,a)$</span></td>
+<td>状态转移概率</td>
+<td><strong>马尔可夫性</strong>：下一状态只依赖当前 <span class="math math-inline">$(s,a)$</span></td>
+</tr>
+<tr>
+<td><span class="math math-inline">$R(s,a)$</span></td>
+<td>即时奖励函数</td>
+<td>可以是随机变量</td>
+</tr>
+<tr>
+<td><span class="math math-inline">$\gamma\in[0,1]$</span></td>
+<td>折扣因子</td>
+<td>控制远期奖励权重</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">马尔可夫性是 TD 类方法的底层假设</span></div>
+  <div class="callout-body"><p>&quot;下一状态只取决于当前状态与动作&quot;——这一点决定了后面 TD 能用 <span class="math math-inline">$V(s_{t+1})$</span> 替代未来所有回报，<strong>这是 MC 与 TD 的核心方法论分歧的根</strong>（详见 §2.3）。</p>
+</div>
+</div>
+<h3 id="1.2-有模型-vs-免模型">1.2 有模型 vs 免模型</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>有模型（model-based）</th>
+<th>免模型（model-free）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>是否已知 <span class="math math-inline">$P,R$</span></td>
+<td>✅ 已知或可估计</td>
+<td>❌ 仅能与环境交互采样</td>
+</tr>
+<tr>
+<td>典型算法</td>
+<td>策略迭代、价值迭代（DP）</td>
+<td>MC、TD、Sarsa、Q-learning</td>
+</tr>
+<tr>
+<td>计算方式</td>
+<td>解贝尔曼方程的迭代不动点</td>
+<td>从轨迹<strong>采样</strong>估计</td>
+</tr>
+<tr>
+<td>状态空间扩展性</td>
+<td>大状态空间灾难</td>
+<td>采样数随轨迹线性增长</td>
+</tr>
+<tr>
+<td>现实场景</td>
+<td>雅达利、机器人控制、股票等<strong>高维或未知动态</strong>的场景几乎都不可用（围棋反例：规则已知，AlphaGo 系用 MCTS 走 model-based 路线）</td>
+<td>主流选择</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">现实里的 <span class="math math-inline">$P$</span> 大多虚构</span></div>
+  <div class="callout-body"><p>&quot;熊发怒时装死成功率 0.8&quot; 这种数字在第一次遇到熊时根本不存在。免模型方法不假装自己知道 <span class="math math-inline">$P$</span>，<strong>让 agent 自己试错估出来</strong>。</p>
+</div>
+</div>
+<h3 id="1.3-Q-表格与&quot;未来总奖励&quot;">1.3 Q 表格与&quot;未来总奖励&quot;</h3>
+<p>表格型方法的核心数据结构就是一张 Q 表：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><span class="math math-inline">$a_1$</span></th>
+<th><span class="math math-inline">$a_2$</span></th>
+<th><span class="math math-inline">$\dots$</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math math-inline">$s_1$</span></td>
+<td><span class="math math-inline">$Q(s_1,a_1)$</span></td>
+<td><span class="math math-inline">$Q(s_1,a_2)$</span></td>
+<td>…</td>
+</tr>
+<tr>
+<td><span class="math math-inline">$s_2$</span></td>
+<td>…</td>
+<td>…</td>
+<td>…</td>
+</tr>
+</tbody>
+</table>
+<p>每一格存放 <strong>&quot;在 <span class="math math-inline">$s$</span> 选 <span class="math math-inline">$a$</span> 之后能拿到的未来总奖励&quot;</strong> 的估计：</p>
+<div class="math math-block">
+$$
+Q^\pi(s,a) = \mathbb E_\pi\!\left[\sum_{k=0}^{\infty}\gamma^k r_{t+k+1}\,\Big|\, s_t=s, a_t=a\right]
+$$
+</div>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">为什么是&quot;未来总奖励&quot;而不是&quot;即时奖励&quot;</span></div>
+  <div class="callout-body"><p>救护车闯红灯：单步奖励 <span class="math math-inline">$-100$</span>，但把病人送到的远期奖励 <span class="math math-inline">$+10^6$</span>。<strong>奖励是延迟的，所以必须把目光放远；但又不能无限远</strong>——10 年后股票涨跌不该影响今天的开盘决策——于是用 <span class="math math-inline">$\gamma$</span> 折扣。</p>
+<p>悬崖行走的回溯（<span class="math math-inline">$\gamma=0.6$</span>）演示了这一点：</p>
+<div class="math math-block">
+$$
+G_{12}=-1,\; G_{11}=-1+0.6\!\times\!(-1)=-1.6,\; G_{10}=-1.96,\; G_9\approx-2.18,\dots
+$$
+</div>
+</div>
+</div>
+<hr />
+<h2 id="2.-免模型预测：估计-的两条路线">2. 免模型预测：估计 <span class="math math-inline">$V^\pi$</span> 的两条路线</h2>
+<p>策略已给定的前提下，如何估出每个状态的价值？<strong>MC 与 TD 是仅有的两条主流路线</strong>。</p>
+<h3 id="2.1-蒙特卡洛（MC）：等一条轨迹结束、用真实回报算平均">2.1 蒙特卡洛（MC）：等一条轨迹结束、用真实回报算平均</h3>
+<p>给定策略 <span class="math math-inline">$\pi$</span>，跑出一条完整轨迹 <span class="math math-inline">$(s_1,a_1,r_1,\dots,s_T)$</span>，对每个被访问的状态 <span class="math math-inline">$s_t$</span> 算出实际回报：</p>
+<div class="math math-block">
+$$
+G_t = r_{t+1} + \gamma r_{t+2} + \gamma^2 r_{t+3} + \dots
+$$
+</div>
+<p>然后用经验平均估计：</p>
+<div class="math math-block">
+$$
+V(s) \approx \frac{1}{N(s)}\sum_{i=1}^{N(s)} G_t^{(i)}
+$$
+</div>
+<h4 id="增量更新形式">增量更新形式</h4>
+<p>直接存所有 <span class="math math-inline">$G_t$</span> 算平均太费内存。用如下恒等式把&quot;批平均&quot;改成&quot;增量更新&quot;：</p>
+<div class="math math-block">
+$$
+\begin{aligned}
+\mu_t &= \frac{1}{t}\sum_{j=1}^t x_j = \frac{1}{t}\big(x_t + (t-1)\mu_{t-1}\big) \\
+&= \mu_{t-1} + \frac{1}{t}(x_t - \mu_{t-1})
+\end{aligned}
+$$
+</div>
+<p>应用到状态价值：</p>
+<div class="math math-block">
+$$
+\boxed{\; V(s_t) \leftarrow V(s_t) + \alpha\big(G_t - V(s_t)\big) \;}
+$$
+</div>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">为什么这步关键</span></div>
+  <div class="callout-body"><p>把&quot;全部样本均值&quot;改写成&quot;上一估计 + 残差 × 学习率&quot;的形式——这是<strong>所有在线值函数更新的统一模板</strong>，后续 TD、Sarsa、Q-learning 都是这个壳，只是把 <span class="math math-inline">$G_t$</span> 换成不同的目标。<span class="math math-inline">$\alpha$</span> 既可以取 <span class="math math-inline">$1/N(s)$</span>（无偏），也可以固定为小常数（适合非平稳环境，遗忘旧经验）。</p>
+</div>
+</div>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">naive MC 的两大痛点</span></div>
+  <div class="callout-body"><ol>
+<li><strong>必须等到 episode 结束</strong>才能更新——持续任务（continuing task）根本没有&quot;结束&quot;。</li>
+<li><strong>回报方差极大</strong>——<span class="math math-inline">$G_t$</span> 是一整条轨迹上所有随机奖励的累积和，方差随时间步线性甚至指数增长。</li>
+</ol>
+</div>
+</div>
+<h3 id="2.2-时序差分（TD）：往前走一步就更新，bootstrap">2.2 时序差分（TD）：往前走一步就更新，bootstrap</h3>
+<p>TD 的关键操作是<strong>用估计的下一状态价值替换未来全部奖励之和</strong>：</p>
+<div class="math math-block">
+$$
+G_t = r_{t+1} + \gamma G_{t+1} \;\xrightarrow{\text{bootstrap}}\; r_{t+1} + \gamma V(s_{t+1})
+$$
+</div>
+<p>代入 §2.1 的更新模板，得到 <strong>TD(0)</strong> 更新：</p>
+<div class="math math-block">
+$$
+\boxed{\; V(s_t) \leftarrow V(s_t) + \alpha\,\big[\,\underbrace{r_{t+1} + \gamma V(s_{t+1})}_{\text{TD target}} - V(s_t)\,\big] \;}\tag{3.1}
+$$
+</div>
+<p>其中 TD 目标 <span class="math math-inline">$r_{t+1}+\gamma V(s_{t+1})$</span> 之所以是&quot;估计&quot;，有两个原因：</p>
+<ol>
+<li><span class="math math-inline">$r_{t+1}$</span> 是从一次<strong>采样</strong>中得到（期望意义上的采样）；</li>
+<li><span class="math math-inline">$V(s_{t+1})$</span> 是<strong>当前估计</strong>而非真实 <span class="math math-inline">$V^\pi(s_{t+1})$</span>（自举/bootstrap）。</li>
+</ol>
+<p>差量 <span class="math math-inline">$\delta = r_{t+1}+\gamma V(s_{t+1}) - V(s_t)$</span> 称为<strong>TD error</strong>——巴甫洛夫条件反射的数学化：下一状态的价值&quot;反过来&quot;强化上一状态。</p>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">aha：单步更新解锁了&quot;在线学习&quot;</span></div>
+  <div class="callout-body"><p>MC 必须等到 episode 终止；TD 只要走一步就能更新。开车上班遇到路口 A 堵车：MC 要等到到公司才会更新对 A 的预测，TD 在 A 堵的当下就已经把估计调过来了。</p>
+</div>
+</div>
+<h3 id="2.3-MC-vs-TD-对比（重点）">2.3 MC vs TD 对比（重点）</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>蒙特卡洛（MC）</th>
+<th>时序差分（TD）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>目标值</td>
+<td>实际回报 <span class="math math-inline">$G_t$</span></td>
+<td><span class="math math-inline">$r_{t+1}+\gamma V(s_{t+1})$</span></td>
+</tr>
+<tr>
+<td>是否 bootstrap</td>
+<td>❌</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>是否采样</td>
+<td>✅（整条轨迹）</td>
+<td>✅（单步）</td>
+</tr>
+<tr>
+<td>更新时机</td>
+<td>episode 结束后</td>
+<td>每一步都能更新</td>
+</tr>
+<tr>
+<td>在线学习</td>
+<td>❌</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>是否需要终止</td>
+<td>✅（仅限 episodic 任务）</td>
+<td>❌（continuing 也行）</td>
+</tr>
+<tr>
+<td>偏差</td>
+<td><strong>无偏（first-visit）</strong> / 渐近无偏（every-visit）：<span class="math math-inline">$G_t$</span> 是 <span class="math math-inline">$V^\pi$</span> 的样本</td>
+<td>有偏（<span class="math math-inline">$V(s_{t+1})$</span> 是估计）</td>
+</tr>
+<tr>
+<td>方差</td>
+<td><strong>高</strong>（整条轨迹的累积随机性）</td>
+<td>低（只含 <span class="math math-inline">$r_{t+1}$</span> 的随机性）</td>
+</tr>
+<tr>
+<td><strong>是否假设马尔可夫性</strong></td>
+<td>❌ <strong>不依赖马尔可夫假设</strong></td>
+<td>✅ <strong>依赖马尔可夫假设</strong>（用 <span class="math math-inline">$V(s_{t+1})$</span> 概括未来 = 假设下一状态足以决定未来分布）</td>
+</tr>
+<tr>
+<td>非马尔可夫环境表现</td>
+<td>更稳健</td>
+<td>可能偏差大</td>
+</tr>
+<tr>
+<td>马尔可夫环境表现</td>
+<td>浪费信息</td>
+<td>学习更高效</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">易错点：MC vs TD 的区别<strong>不是&quot;假设结果不同&quot;，而是&quot;是否做马尔可夫假设&quot;</strong></span></div>
+  <div class="callout-body"><p>初学者常把 MC 描述成&quot;采样多所以更准&quot;——这是错的。真正的方法论差别在于：TD 用 <span class="math math-inline">$V(s_{t+1})$</span> 概括未来，等价于断言&quot;未来只依赖 <span class="math math-inline">$s_{t+1}$</span>&quot;，即<strong>显式诉诸马尔可夫性</strong>；MC 不做这个假设，只看实际跑出来的总回报，所以在部分可观测/非马尔可夫场景下反而更可靠。</p>
+</div>
+</div>
+<h3 id="2.4-步-TD-与-TD()：在-MC-与-TD-之间插值">2.4 <span class="math math-inline">$n$</span> 步 TD 与 TD(<span class="math math-inline">$\lambda$</span>)：在 MC 与 TD 之间插值</h3>
+<p>把 TD(0) 的&quot;一步前看&quot;推广到 <span class="math math-inline">$n$</span> 步：</p>
+<div class="math math-block">
+$$
+\begin{aligned}
+n=1 \;(\text{TD}(0)) &: \quad G_t^{(1)} = r_{t+1} + \gamma V(s_{t+1}) \\
+n=2 &: \quad G_t^{(2)} = r_{t+1} + \gamma r_{t+2} + \gamma^2 V(s_{t+2}) \\
+&\;\;\vdots \\
+n=\infty \;(\text{MC}) &: \quad G_t^{(\infty)} = r_{t+1} + \gamma r_{t+2} + \dots + \gamma^{T-t-1} r_T
+\end{aligned}\tag{3.2}
+$$
+</div>
+<p>更新仍是 <span class="math math-inline">$V(s_t)\leftarrow V(s_t)+\alpha(G_t^{(n)}-V(s_t))$</span>。</p>
+<p><strong>TD(<span class="math math-inline">$\lambda$</span>)</strong> 用衰减权重 <span class="math math-inline">$\lambda^{n-1}$</span> 对所有 <span class="math math-inline">$n$</span> 步回报加权求和：</p>
+<div class="math math-block">
+$$
+G_t^\lambda = (1-\lambda)\sum_{n=1}^\infty \lambda^{n-1} G_t^{(n)}
+$$
+</div>
+<ul>
+<li><span class="math math-inline">$\lambda=0$</span> → 退化为 TD(0)</li>
+<li><span class="math math-inline">$\lambda=1$</span> → 退化为 MC</li>
+<li>中间 <span class="math math-inline">$\lambda$</span>：<strong>偏差-方差权衡</strong>的连续旋钮</li>
+</ul>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">统一视角（Sutton &amp; Barto 经典图）</span></div>
+  <div class="callout-body"><ul>
+<li><strong>DP</strong>：广度大、深度浅（一步备份、扫所有后继 <span class="math math-inline">$s'$</span>）</li>
+<li><strong>MC</strong>：广度小、深度大（一条轨迹到底）</li>
+<li><strong>TD</strong>：广度小、深度小（一条轨迹的一步）</li>
+<li><strong>穷举搜索</strong>：广度大、深度大（昂贵到不可行）</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="3.-免模型控制：从评估到改进">3. 免模型控制：从评估到改进</h2>
+<p>预测解决了&quot;给定 <span class="math math-inline">$\pi$</span> 估 <span class="math math-inline">$V^\pi$</span>&quot;。<strong>控制</strong>问题是&quot;找最优 <span class="math math-inline">$\pi^*$</span>&quot;。</p>
+<h3 id="3.1-GPI：广义策略迭代">3.1 GPI：广义策略迭代</h3>
+<p>经典策略迭代两步走：</p>
+<div class="math math-block">
+$$
+\underbrace{\pi\;\xrightarrow{\text{评估}}\; V^\pi}_{\text{policy evaluation}} \quad \underbrace{V^\pi \;\xrightarrow{\text{贪心}}\; \pi'}_{\text{policy improvement}}
+$$
+</div>
+<p>广义策略迭代（GPI）放宽两点：</p>
+<ol>
+<li>评估不需要做到收敛——一两步就更新策略也行；</li>
+<li>评估方法可以是 DP、MC 或 TD 中任一种。</li>
+</ol>
+<p>但免模型情况下有个<strong>结构性麻烦</strong>：直接拿 <span class="math math-inline">$V$</span> 无法做贪心改进——</p>
+<div class="math math-block">
+$$
+\pi'(s) = \arg\max_a \big[R(s,a) + \gamma\sum_{s'}P(s'\mid s,a)V(s')\big]
+$$
+</div>
+<p>需要 <span class="math math-inline">$P,R$</span>！<strong>于是改估 <span class="math math-inline">$Q(s,a)$</span> 而非 <span class="math math-inline">$V(s)$</span></strong>：直接</p>
+<div class="math math-block">
+$$
+\pi'(s) = \arg\max_a Q(s,a)
+$$
+</div>
+<p>不需要模型。这就是表格型控制都走 Q 而非 V 的根本原因。</p>
+<h3 id="3.2--greedy-探索">3.2 <span class="math math-inline">$\varepsilon$</span>-greedy 探索</h3>
+<p>如果一直 <span class="math math-inline">$\arg\max$</span>，初始随机化的 Q 表会把 agent 锁在最早撞出 0 奖励的那条路径上——<strong>探索不足</strong>。<span class="math math-inline">$\varepsilon$</span>-greedy 在每一步以小概率 <span class="math math-inline">$\varepsilon$</span> 随机选动作：</p>
+<div class="math math-block">
+$$
+\pi(a\mid s) = \begin{cases}
+1-\varepsilon+\dfrac{\varepsilon}{|\mathcal A|} & a=\arg\max_{a'}Q(s,a') \\[6pt]
+\dfrac{\varepsilon}{|\mathcal A|} & \text{otherwise}
+\end{cases}
+$$
+</div>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text"><span class="math math-inline">$\varepsilon$</span>-greedy 的两个性质</span></div>
+  <div class="callout-body"><ol>
+<li><strong>覆盖性</strong>：所有 <span class="math math-inline">$(s,a)$</span> 在无限时间内被访问的概率为正——保证 Q 表所有格子可更新。</li>
+<li><strong>单调改进</strong>（即使带探索，策略也变好）：对任意 <span class="math math-inline">$\varepsilon$</span>-greedy 策略 <span class="math math-inline">$\pi$</span>，关于 <span class="math math-inline">$Q^\pi$</span> 的 <span class="math math-inline">$\varepsilon$</span>-greedy 策略 <span class="math math-inline">$\pi'$</span> 满足 <span class="math math-inline">$V^{\pi'}(s)\geq V^\pi(s)$</span>。证明：</li>
+</ol>
+<div class="math math-block">
+$$
+\begin{aligned}
+Q^\pi(s,\pi'(s)) &= \sum_a \pi'(a\mid s)\, Q^\pi(s,a)  && \leftarrow\ \text{Q 与策略的定义}\\
+&= \tfrac{\varepsilon}{|\mathcal A|}\sum_a Q^\pi(s,a) + (1-\varepsilon)\max_a Q^\pi(s,a) && \leftarrow\ \text{代入 ε-greedy 概率}\\
+&\geq \tfrac{\varepsilon}{|\mathcal A|}\sum_a Q^\pi(s,a) + (1-\varepsilon)\sum_a \tfrac{\pi(a\mid s)-\varepsilon/|\mathcal A|}{1-\varepsilon}Q^\pi(s,a) && \leftarrow\ \max \geq\text{ 凸组合}\\
+&= \sum_a \pi(a\mid s) Q^\pi(s,a) = V^\pi(s)
+\end{aligned}
+$$
+</div>
+<p>关键不等号：把 <span class="math math-inline">$\max$</span> 换成&quot;按某概率分布加权和&quot;——后者不大于前者。
+由此得到 <span class="math math-inline">$Q^\pi(s,\pi'(s))\geq V^\pi(s)$</span>，再由<span class="wikilink" data-target="马尔可夫决策过程教程" title="马尔可夫决策过程教程">策略改进定理（policy improvement theorem）</span>推开后继状态，即可得 <span class="math math-inline">$V^{\pi'}(s)\geq V^\pi(s)$</span>。</p>
+</div>
+</div>
+<h4 id="退火（annealing）"><span class="math math-inline">$\varepsilon$</span> 退火（annealing）</h4>
+<p><strong><span class="math math-inline">$\varepsilon$</span> 必须随训练衰减</strong>，否则即使收敛后仍保留固定比例随机动作，性能受限。典型形式：</p>
+<ul>
+<li>线性：<span class="math math-inline">$\varepsilon_k = \max(\varepsilon_{\min},\, 1 - k/K)$</span></li>
+<li>指数：<span class="math math-inline">$\varepsilon_k = \varepsilon_{\min} + (\varepsilon_0-\varepsilon_{\min})\exp(-k/\tau)$</span></li>
+</ul>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text"><span class="math math-inline">$\varepsilon$</span> 不退火 → 无法收敛到确定性最优策略 <span class="math math-inline">$\pi^*$</span></span></div>
+  <div class="callout-body"><p>固定 <span class="math math-inline">$\varepsilon$</span> 的 ε-greedy 仍会收敛，但收敛目标是&quot;<span class="math math-inline">$\varepsilon$</span>-soft 类策略中的最优&quot;（始终保留 <span class="math math-inline">$\varepsilon$</span> 比例随机），性能严格劣于真正的 <span class="math math-inline">$\pi^*$</span>。
+想收敛到 <span class="math math-inline">$\pi^*$</span> 需满足 <strong>GLIE 条件</strong>（Greedy in the Limit with Infinite Exploration）：极限处贪心 + 每个 <span class="math math-inline">$(s,a)$</span> 探索次数无穷大——这就是 <span class="math math-inline">$\varepsilon$</span> 退火（且足够慢，如 <span class="math math-inline">$\varepsilon_k=1/k$</span>）的理论根据。</p>
+</div>
+</div>
+<hr />
+<h2 id="4.-Sarsa：on-policy-TD-控制">4. Sarsa：on-policy TD 控制</h2>
+<p>Sarsa 把 TD(0) 的 <span class="math math-inline">$V$</span>-估计搬到 <span class="math math-inline">$Q$</span>-估计上：</p>
+<div class="math math-block">
+$$
+\boxed{\; Q(s_t,a_t) \leftarrow Q(s_t,a_t) + \alpha\big[\,r_{t+1} + \gamma Q(s_{t+1}, a_{t+1}) - Q(s_t,a_t)\,\big] \;}\tag{3.4}
+$$
+</div>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">名字的由来：(<strong>S</strong>,<strong>A</strong>,<strong>R</strong>,<strong>S'</strong>,<strong>A'</strong>) 五元组</span></div>
+  <div class="callout-body"><p>一次更新需要五个量——当前 <span class="math math-inline">$s_t,a_t$</span>、奖励 <span class="math math-inline">$r_{t+1}$</span>、下一状态 <span class="math math-inline">$s_{t+1}$</span>、<strong>以及由当前策略 <span class="math math-inline">$\pi$</span> 实际采样得到的下一动作 <span class="math math-inline">$a_{t+1}$</span></strong>。最后这个 <span class="math math-inline">$a_{t+1}$</span> 是 Sarsa 与 Q-learning 的分水岭。</p>
+</div>
+</div>
+<h3 id="4.1-为什么是-on-policy">4.1 为什么是 on-policy</h3>
+<p>更新目标里的 <span class="math math-inline">$Q(s_{t+1}, a_{t+1})$</span> 中，<span class="math math-inline">$a_{t+1}$</span> 由<strong>当前执行的同一策略</strong> <span class="math math-inline">$\pi$</span> 采样产生（即 <span class="math math-inline">$\varepsilon$</span>-greedy 自己选的）。这意味着：</p>
+<ul>
+<li><strong>学的策略 = 用的策略</strong>。</li>
+<li>如果 <span class="math math-inline">$\pi$</span> 会以 <span class="math math-inline">$\varepsilon$</span> 概率随机走到悬崖，Sarsa 在 <span class="math math-inline">$Q$</span> 表更新时就<strong>把这种&quot;探索掉下去&quot;的风险计入价值</strong>，从而学到一条&quot;远离悬崖、留有缓冲&quot;的保守路径。</li>
+</ul>
+<h3 id="4.2-算法伪代码">4.2 算法伪代码</h3>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">Sarsa 算法</span></div>
+  <div class="callout-body"><pre><code>初始化 Q(s,a) 任意值，终止状态置 0
+循环每个 episode:
+    初始化 s
+    用 ε-greedy(Q, s) 采样动作 a
+    循环每一步：
+        执行 a，观察 r, s&#x27;
+        用 ε-greedy(Q, s&#x27;) 采样下一动作 a&#x27;
+        Q(s,a) ← Q(s,a) + α[r + γ Q(s&#x27;,a&#x27;) - Q(s,a)]
+        s, a ← s&#x27;, a&#x27;
+    until s 是终止状态
+</code></pre>
+</div>
+</div>
+<p>可推广到 <span class="math math-inline">$n$</span> 步 Sarsa：把 <span class="math math-inline">$r_{t+1}+\gamma Q(s_{t+1},a_{t+1})$</span> 换成 <span class="math math-inline">$n$</span> 步 Q 回报；进一步用 <span class="math math-inline">$\lambda$</span> 加权所有 <span class="math math-inline">$n$</span> 步即得 <strong>Sarsa(<span class="math math-inline">$\lambda$</span>)</strong>：</p>
+<div class="math math-block">
+$$
+Q_t^\lambda = (1-\lambda)\sum_{n=1}^\infty \lambda^{n-1} Q_t^{(n)},\quad Q(s_t,a_t)\leftarrow Q(s_t,a_t)+\alpha\big(Q_t^\lambda - Q(s_t,a_t)\big)
+$$
+</div>
+<hr />
+<h2 id="5.-Q-learning：off-policy-TD-控制">5. Q-learning：off-policy TD 控制</h2>
+<p>Q-learning 的更新长得几乎一样——<strong>只把 <span class="math math-inline">$Q(s_{t+1},a_{t+1})$</span> 换成 <span class="math math-inline">$\max_{a'} Q(s_{t+1}, a')$</span></strong>：</p>
+<div class="math math-block">
+$$
+\boxed{\; Q(s_t,a_t) \leftarrow Q(s_t,a_t) + \alpha\big[\,r_{t+1} + \gamma \max_{a'} Q(s_{t+1}, a') - Q(s_t, a_t)\,\big] \;}
+$$
+</div>
+<h3 id="5.1-行为策略-vs-目标策略">5.1 行为策略 vs 目标策略</h3>
+<table>
+<thead>
+<tr>
+<th>角色</th>
+<th>符号</th>
+<th>用途</th>
+<th>Q-learning 具体形式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>行为策略 <span class="math math-inline">$\mu$</span></strong></td>
+<td>behavior</td>
+<td>与环境交互、采集数据</td>
+<td><span class="math math-inline">$\varepsilon$</span>-greedy（含探索）</td>
+</tr>
+<tr>
+<td><strong>目标策略 <span class="math math-inline">$\pi$</span></strong></td>
+<td>target</td>
+<td>被学习/被优化</td>
+<td>纯贪心 <span class="math math-inline">$\arg\max_a Q$</span></td>
+</tr>
+</tbody>
+</table>
+<p>行为策略像&quot;激进的海盗&quot;出海采数据，目标策略是&quot;后方的军师&quot;靠这些数据学最优兵法——<strong>两个策略不必相同，这就是 off-policy</strong>。</p>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">为什么 Q-learning 是 off-policy：<span class="math math-inline">$\max$</span> 不依赖于 behavior policy</span></div>
+  <div class="callout-body"><p>Sarsa 目标里的 <span class="math math-inline">$a_{t+1}$</span> 由当前 <span class="math math-inline">$\pi$</span> 采样得到——下一步是什么、目标就用什么，二者绑定。</p>
+<p>Q-learning 目标里的 <span class="math math-inline">$\max_{a'}Q(s_{t+1},a')$</span> <strong>只看 Q 表</strong>，与实际下一步执行的动作无关。哪怕 behavior 此刻随机乱走，目标值算的依然是&quot;假设接下来按贪心走能拿多少&quot;。学的就是 <span class="math math-inline">$\pi=\arg\max Q$</span> 这条<strong>目标策略</strong>，与采数据的 <span class="math math-inline">$\mu$</span> 解耦。</p>
+<p>这也解释了&quot;为什么 Q-learning 更新公式里没有 <span class="math math-inline">$a_{t+1}$</span>&quot;——它根本不需要知道实际下一动作。</p>
+</div>
+</div>
+<h3 id="5.2-算法伪代码">5.2 算法伪代码</h3>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">Q-learning 算法</span></div>
+  <div class="callout-body"><pre><code>初始化 Q(s,a) 任意值，终止状态置 0
+循环每个 episode:
+    初始化 s
+    循环每一步：
+        用 ε-greedy(Q, s) 采样动作 a       ← 行为策略
+        执行 a，观察 r, s&#x27;
+        Q(s,a) ← Q(s,a) + α[r + γ max_a&#x27; Q(s&#x27;,a&#x27;) - Q(s,a)]   ← max 用目标策略
+        s ← s&#x27;
+    until s 是终止状态
+</code></pre>
+</div>
+</div>
+<p>与 Sarsa 的差别只有一处：更新公式里的 <span class="math math-inline">$Q(s',a')$</span> 替换为 <span class="math math-inline">$\max_{a'}Q(s',a')$</span>，<strong>且不需要在执行前确定 <span class="math math-inline">$a'$</span></strong>。</p>
+<h3 id="5.3-异策略学习的三大好处">5.3 异策略学习的三大好处</h3>
+<ol>
+<li><strong>样本复用</strong>：旧策略采集的轨迹可以用来更新新的目标策略（这正是 <span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span> 的 Replay Buffer 能成立的根本原因）。</li>
+<li><strong>可学习他者轨迹</strong>：人类示范、其他智能体的经验都能&quot;喂&quot;进来 → 模仿学习。</li>
+<li><strong>探索/学习解耦</strong>：行为策略可以激进探索，目标策略稳定优化。</li>
+</ol>
+<hr />
+<h2 id="6.-Sarsa-vs-Q-learning：本质对比（重磅章节）">6. Sarsa vs Q-learning：本质对比（重磅章节）</h2>
+<h3 id="6.1-对比表">6.1 对比表</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th><strong>Sarsa</strong>（on-policy）</th>
+<th><strong>Q-learning</strong>（off-policy）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>更新目标</td>
+<td><span class="math math-inline">$r_{t+1}+\gamma Q(s_{t+1}, \mathbf{a_{t+1}})$</span></td>
+<td><span class="math math-inline">$r_{t+1}+\gamma \max_{a'} Q(s_{t+1}, a')$</span></td>
+</tr>
+<tr>
+<td>下一动作来源</td>
+<td>当前 <span class="math math-inline">$\pi$</span>（<span class="math math-inline">$\varepsilon$</span>-greedy）<strong>采样</strong>得到</td>
+<td>由 <span class="math math-inline">$\max$</span> 直接选出（不实际执行）</td>
+</tr>
+<tr>
+<td>行为策略 vs 目标策略</td>
+<td><strong>同一个</strong>（都是 <span class="math math-inline">$\varepsilon$</span>-greedy）</td>
+<td><strong>分离</strong>（行为=<span class="math math-inline">$\varepsilon$</span>-greedy；目标=贪心）</td>
+</tr>
+<tr>
+<td>收敛策略</td>
+<td><span class="math math-inline">$\varepsilon$</span>-greedy 最优</td>
+<td><strong>真正最优</strong> <span class="math math-inline">$\pi^*$</span></td>
+</tr>
+<tr>
+<td>学习的 Q 值</td>
+<td><span class="math math-inline">$Q^{\varepsilon\text{-greedy}}$</span>（把探索风险计入）</td>
+<td><span class="math math-inline">$Q^*$</span>（不考虑探索风险）</td>
+</tr>
+<tr>
+<td>风格</td>
+<td>保守、求稳</td>
+<td>激进、求最优</td>
+</tr>
+<tr>
+<td>是否需要 <span class="math math-inline">$a_{t+1}$</span></td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>数据复用（replay）</td>
+<td>❌（旧数据已不符合当前 <span class="math math-inline">$\pi$</span>）</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>著名后裔</td>
+<td>Expected Sarsa、Sarsa(<span class="math math-inline">$\lambda$</span>)</td>
+<td><span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span>、Double DQN、Rainbow</td>
+</tr>
+</tbody>
+</table>
+<h3 id="6.2-Cliff-Walking：Sarsa-保守、Q-learning-激进">6.2 Cliff Walking：Sarsa 保守、Q-learning 激进</h3>
+<p><img src="https://datawhalechina.github.io/easy-rl/img/ch3/3.7.png" alt="原文图 3.9 悬崖行走问题" />
+<em>图 3.9 · 悬崖行走问题（<a href="https://datawhalechina.github.io/easy-rl/#/chapter3/chapter3" target="_blank" rel="noopener noreferrer">Easy-RL 第 3 章</a>）。S 出发、G 终点，下方一整排格子是悬崖，每步 <span class="math math-inline">$-1$</span>、掉下悬崖 <span class="math math-inline">$-100$</span> 并被弹回 S。</em></p>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">类比：两条路的选择</span></div>
+  <div class="callout-body"><ul>
+<li><strong>红线</strong>：沿悬崖边走最短路径，每步紧贴危险——Q-learning 喜欢这条，因为它假设下一步按 <span class="math math-inline">$\max$</span> 贪心走、不会失误。</li>
+<li><strong>蓝线</strong>：先上去一格、远离悬崖再走——Sarsa 喜欢这条，因为它知道自己以 <span class="math math-inline">$\varepsilon$</span> 概率会&quot;手抖&quot;随机一步，紧贴悬崖时这一抖就是 <span class="math math-inline">$-100$</span>，提前把这个风险吸收进 Q 值。</li>
+</ul>
+<p>训练阶段（含探索），Sarsa 的实际收益往往<strong>反而高于</strong> Q-learning，因为它走的路在自己的探索行为下更安全。但若部署时关掉探索，Q-learning 收敛到的策略才是真正最短路径。</p>
+</div>
+</div>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">&quot;Q-learning 学得更好&quot; ≠ &quot;Q-learning 用起来效果更好&quot;</span></div>
+  <div class="callout-body"><p>评价语境很重要：</p>
+<ul>
+<li><strong>离线学到的最优策略</strong>：Q-learning 胜（学到 <span class="math math-inline">$\pi^*$</span>）。</li>
+<li><strong>训练过程中的累积回报</strong>：Sarsa 经常更高（因为 Sarsa 自己跑出来的轨迹更稳）。
+这一点在 Sutton &amp; Barto 6.5 节 cliff walking 实验里有著名的对照曲线。</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="7.-Cheat-Sheet">7. Cheat Sheet</h2>
+<h3 id="7.1-Sarsa-最小实现（numpy-风格）">7.1 Sarsa 最小实现（numpy 风格）</h3>
+<pre><code class="language-python">import numpy as np
+Q = np.zeros((nS, nA))               # Q 表，行=状态、列=动作
+def eps_greedy(s, eps):
+    return np.random.randint(nA) if np.random.rand() &lt; eps else int(np.argmax(Q[s]))
+
+for ep in range(N):
+    s = env.reset(); a = eps_greedy(s, eps)
+    done = False
+    while not done:
+        s2, r, done, _ = env.step(a)                       # Gym ≤ 0.25 旧 API
+        # Gym 0.26+ / Gymnasium:
+        # s2, r, terminated, truncated, _ = env.step(a); done = terminated or truncated
+        a2 = eps_greedy(s2, eps)                           # ← 由 π 采样的下一动作
+        target = r + gamma * Q[s2, a2] * (1 - done)        # done 时切断 bootstrap
+        Q[s, a] += alpha * (target - Q[s, a])
+        s, a = s2, a2
+    eps = max(eps_min, eps * eps_decay)                    # ε 退火
+</code></pre>
+<h3 id="7.2-Q-learning-最小实现">7.2 Q-learning 最小实现</h3>
+<pre><code class="language-python">import numpy as np
+Q = np.zeros((nS, nA))
+def eps_greedy(s, eps):
+    return np.random.randint(nA) if np.random.rand() &lt; eps else int(np.argmax(Q[s]))
+
+for ep in range(N):
+    s = env.reset(); done = False
+    while not done:
+        a = eps_greedy(s, eps)                             # 行为策略 ε-greedy
+        s2, r, done, _ = env.step(a)                       # Gym ≤ 0.25 旧 API
+        target = r + gamma * Q[s2].max() * (1 - done)      # max 不依赖 a&#x27;；done 时切断 bootstrap
+        Q[s, a] += alpha * (target - Q[s, a])
+        s = s2
+    eps = max(eps_min, eps * eps_decay)
+</code></pre>
+<p>唯一差别就是更新目标：<code>Q[s2, a2]</code> vs <code>Q[s2].max()</code>。两段代码都用 <code>* (1 - done)</code> 显式 mask 终止状态——否则只有&quot;终止状态格子永远不被覆盖&quot;才能碰巧正确，更脆弱。</p>
+<h3 id="7.3-常见坑">7.3 常见坑</h3>
+<div class="callout callout-summary" style="border-left-color:#64748b; background:#64748b14;">
+  <div class="callout-title"><span class="callout-icon">📌</span><span class="callout-title-text">表格型方法的工程陷阱</span></div>
+  <div class="callout-body"><ul>
+<li><strong><span class="math math-inline">$\alpha$</span> 太大</strong>：Q 值震荡甚至发散；典型范围 <span class="math math-inline">$0.01\sim 0.5$</span>，环境噪声大就压小。</li>
+<li><strong><span class="math math-inline">$\varepsilon$</span> 不退火</strong>：永远保留固定比例随机动作，无法收敛到最优；至少线性衰减到 <span class="math math-inline">$0.01\sim 0.05$</span>。</li>
+<li><strong>Q 表初始化全 0 vs 乐观初始化</strong>：乐观初始化（如全设为 <span class="math math-inline">$r_{\max}/(1-\gamma)$</span>）会主动驱动 agent 尝试未访问过的动作——一种隐式探索机制。</li>
+<li><strong><span class="math math-inline">$\gamma$</span> 取错</strong>：<span class="math math-inline">$\gamma=1$</span> 在无终止任务里 <span class="math math-inline">$G_t$</span> 发散；<span class="math math-inline">$\gamma$</span> 太小 agent 看不到远期奖励。常用 <span class="math math-inline">$0.9\sim 0.99$</span>。</li>
+<li><strong>状态-动作维度灾难</strong>：<span class="math math-inline">$|\mathcal S|\times|\mathcal A|$</span> 表格在围棋（<span class="math math-inline">$10^{170}$</span> 状态）、Atari（像素状态）上<strong>根本无法分配内存</strong> → 必须改用函数逼近，即 <span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span>。</li>
+<li><strong>奖励标度</strong>：所有 <span class="math math-inline">$r$</span> 集中在 <span class="math math-inline">$[-1,1]$</span> 学得更稳；稀疏奖励要 reward shaping 或好奇心驱动。</li>
+<li><strong>Sarsa 训练曲线 &gt; Q-learning 不等于 Sarsa 更优</strong>：评估时必须关掉 <span class="math math-inline">$\varepsilon$</span>（greedy 评估）才能比目标策略质量。</li>
+<li><strong>Q-learning 的 maximization bias</strong>：<span class="math math-inline">$\max_a$</span> 引入正向偏差（noisy Q 的最大值期望 &gt; 真实最大值的期望）→ Double Q-learning 是经典修正。</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="8.-一图总览">8. 一图总览</h2>
+<pre><code class="language-dot">digraph G {
+  rankdir=TB;
+  node [shape=box, style=&quot;rounded,filled&quot;, fillcolor=&quot;#f0f4ff&quot;, fontname=&quot;Helvetica&quot;];
+  edge [fontname=&quot;Helvetica&quot;, fontsize=10];
+
+  MDP [label=&quot;MDP (S, A, P, R, γ)\n马尔可夫决策过程&quot;, fillcolor=&quot;#f0f4ff&quot;];
+
+  modelbased [label=&quot;有模型\n(策略迭代 / 价值迭代)&quot;, fillcolor=&quot;#e8e8e8&quot;];
+  modelfree  [label=&quot;免模型\n仅通过采样&quot;, fillcolor=&quot;#fff4d6&quot;];
+
+  MDP -&gt; modelbased [label=&quot;P, R 已知&quot;];
+  MDP -&gt; modelfree  [label=&quot;P, R 未知&quot;];
+
+  predict [label=&quot;预测：估 V^π / Q^π&quot;, fillcolor=&quot;#fff4d6&quot;];
+  modelfree -&gt; predict;
+
+  MC [label=&quot;蒙特卡洛\nG_t (完整轨迹)\n无偏 / 高方差 / 不需马尔可夫&quot;];
+  TD [label=&quot;时序差分 TD(0)\nr + γV(s&#x27;)\n有偏 / 低方差 / 假设马尔可夫&quot;];
+  nstep [label=&quot;n 步 TD / TD(λ)\n偏差-方差插值&quot;];
+
+  predict -&gt; MC;
+  predict -&gt; TD;
+  TD -&gt; nstep;
+  MC -&gt; nstep [style=dashed, label=&quot;λ→1 退化为 MC&quot;];
+
+  control [label=&quot;控制：找 π*\nGPI + ε-greedy&quot;, fillcolor=&quot;#fff4d6&quot;];
+  TD -&gt; control;
+  MC -&gt; control [style=dashed];
+
+  sarsa [label=&quot;Sarsa (on-policy)\nQ ← Q + α[r + γQ(s&#x27;, a&#x27;) − Q]\n保守 / 学 ε-greedy 最优&quot;, fillcolor=&quot;#d6ffd6&quot;];
+  qlearn [label=&quot;Q-learning (off-policy)\nQ ← Q + α[r + γ max_a&#x27; Q(s&#x27;, a&#x27;) − Q]\n激进 / 学真正 π*&quot;, fillcolor=&quot;#d6ffd6&quot;];
+
+  control -&gt; sarsa  [label=&quot;a&#x27; 由 π 采样&quot;];
+  control -&gt; qlearn [label=&quot;a&#x27; = arg max&quot;];
+
+  dqn [label=&quot;DQN\nQ_θ(s, a) 神经网络近似\n+ Replay + Target Net&quot;, fillcolor=&quot;#ffd6d6&quot;];
+  qlearn -&gt; dqn [label=&quot;表格 → 函数逼近&quot;];
+
+  {rank=same; sarsa; qlearn;}
+  {rank=same; MC; TD;}
+}
+</code></pre>
+<p><strong>配色说明</strong>：浅蓝=起点定义；浅黄=问题阶段；浅绿=表格型算法；浅红=函数逼近后裔（<span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span>）。</p>
+<hr />
+<h2 id="9.-关联笔记">9. 关联笔记</h2>
+<ul>
+<li><span class="wikilink" data-target="马尔可夫决策过程教程" title="马尔可夫决策过程教程">马尔可夫决策过程</span>：本章的形式化基础。</li>
+<li><span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span>：另一条主路线——不学 Q 而直接学策略；与表格型的&quot;先评估再贪心&quot;形成方法论对照。</li>
+<li><span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span>：把这张表换成神经网络 <span class="math math-inline">$Q_\theta(s,a)$</span>，加 Replay Buffer 与 Target Network——本质上是<strong>表格型 Q-learning 在大状态空间下的函数逼近版</strong>。</li>
+<li><span class="wikilink" data-target="Actor-Critic教程" title="Actor-Critic教程">Actor-Critic</span>：把 §2 的 TD 评估（critic）和 <span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span> 的策略学习（actor）拼起来。</li>
+<li><span class="wikilink" data-target="PPO教程" title="PPO教程">PPO</span>：在 Actor-Critic 上加 clip ratio，是当今最广泛使用的策略优化方法。</li>
+</ul>
+<p><strong>原文</strong>：<a href="https://datawhalechina.github.io/easy-rl/#/chapter3/chapter3" target="_blank" rel="noopener noreferrer">Easy-RL 第 3 章 · 表格型方法</a></p>
+
+</main>
+</body>
+</html>

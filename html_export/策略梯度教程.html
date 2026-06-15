@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>策略梯度（Policy Gradient）高密度教程</title>
+  <link rel="stylesheet" href="_assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3/lib/viz-standalone.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async function () {
+      // 1. highlight.js — only on blocks that opted in via language-XXX class
+      try {
+        document.querySelectorAll('pre code').forEach(function (block) {
+          if (block.classList.contains('language-dot')) return;
+          if (block.classList.contains('language-mermaid')) return;
+          // Skip auto-detect on un-tagged blocks (e.g. ASCII diagrams) — hljs
+          // mis-classifies short text and recolours it badly.
+          var hasLang = false;
+          for (var i = 0; i < block.classList.length; i++) {
+            if (block.classList[i].indexOf('language-') === 0) { hasLang = true; break; }
+          }
+          if (!hasLang) return;
+          window.hljs && window.hljs.highlightElement(block);
+        });
+      } catch (e) { console.warn('hljs failed', e); }
+
+      // 2. Graphviz: replace <pre><code class="language-dot"> with rendered SVG
+      try {
+        if (window.Viz && typeof window.Viz.instance === 'function') {
+          const vizInstance = await window.Viz.instance();
+          document.querySelectorAll('pre code.language-dot').forEach(function (block) {
+            try {
+              const svg = vizInstance.renderSVGElement(block.textContent);
+              const wrapper = document.createElement('div');
+              wrapper.className = 'graphviz';
+              wrapper.appendChild(svg);
+              block.parentElement.replaceWith(wrapper);
+            } catch (err) {
+              console.error('viz render failed', err);
+              block.parentElement.classList.add('graphviz-error');
+            }
+          });
+        } else {
+          console.warn('viz-js not loaded');
+        }
+      } catch (e) { console.warn('viz init failed', e); }
+
+      // 3. Mermaid
+      try {
+        if (window.mermaid) {
+          window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+          await window.mermaid.run({ querySelector: 'pre.mermaid' });
+        }
+      } catch (e) { console.warn('mermaid failed', e); }
+
+      // 4. KaTeX last so it does not fight hljs/viz
+      try {
+        if (window.renderMathInElement) {
+          window.renderMathInElement(document.body, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$',  right: '$',  display: false }
+            ],
+            throwOnError: false,
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+          });
+        }
+      } catch (e) { console.warn('katex failed', e); }
+    });
+  </script>
+</head>
+<body>
+<header class="meta">
+  <h1 class="doc-title">策略梯度（Policy Gradient）高密度教程</h1>
+  <div class="meta-row">
+    <span class="meta-tags"><span class="meta-tag">#强化学习</span><span class="meta-tag">#策略梯度</span><span class="meta-tag">#REINFORCE</span><span class="meta-tag">#RL</span></span>
+    <span class="meta-source">来源：<a href="https://datawhalechina.github.io/easy-rl/#/chapter4/chapter4">https://datawhalechina.github.io/easy-rl/#/chapter4/chapter4</a></span>
+    <span class="meta-date">2026-06-14</span>
+  </div>
+</header>
+
+<main class="doc">
+<h1 id="策略梯度（Policy-Gradient）">策略梯度（Policy Gradient）</h1>
+<div class="callout callout-abstract" style="border-left-color:#7c3aed; background:#7c3aed14;">
+  <div class="callout-title"><span class="callout-icon">📋</span><span class="callout-title-text">一句话</span></div>
+  <div class="callout-body"><p><strong>策略梯度</strong>直接对参数化策略 <span class="math math-inline">$\pi_\theta(a\mid s)$</span> 求梯度、用梯度上升最大化期望回报 <span class="math math-inline">$\bar R_\theta=\mathbb E_{\tau\sim p_\theta}[R(\tau)]$</span>。其核心数学工具是 <strong>Log-Derivative Trick</strong>：把 <span class="math math-inline">$\nabla p_\theta(\tau)$</span> 改写成 <span class="math math-inline">$p_\theta(\tau)\nabla \log p_\theta(\tau)$</span>，从而把&quot;对概率求梯度&quot;变成&quot;对 log 概率求梯度的期望&quot;，使其可用采样估计。</p>
+</div>
+</div>
+<hr />
+<h2 id="1.-背景：RL-三要素与策略">1. 背景：RL 三要素与策略</h2>
+<p>强化学习的三个组成部分：</p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>含义</th>
+<th>是否可控</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>演员 actor</strong></td>
+<td>输出动作的策略 <span class="math math-inline">$\pi_\theta$</span></td>
+<td>✅ 唯一可调</td>
+</tr>
+<tr>
+<td><strong>环境 environment</strong></td>
+<td>状态转移 <span class="math math-inline">$p(s_{t+1}\mid s_t,a_t)$</span></td>
+<td>❌ 给定</td>
+</tr>
+<tr>
+<td><strong>奖励函数 reward</strong></td>
+<td>标量回报 <span class="math math-inline">$r_t$</span></td>
+<td>❌ 给定</td>
+</tr>
+</tbody>
+</table>
+<p><strong>策略 <span class="math math-inline">$\pi_\theta$</span></strong> 是一个以 <span class="math math-inline">$\theta$</span> 为参数的神经网络：输入状态 <span class="math math-inline">$s$</span>（如游戏画面），输出动作的概率分布，按分布<strong>采样</strong>得到动作 <span class="math math-inline">$a$</span>。</p>
+<blockquote>
+<p>采样而非取 argmax —— 这给了 PG 天然的探索能力，也是它与 DQN 等基于值方法的根本区别。</p>
+</blockquote>
+<h3 id="与值函数方法的对比">与值函数方法的对比</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>值函数（Q-learning / DQN）</th>
+<th>策略梯度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>学什么</td>
+<td><span class="math math-inline">$Q(s,a)$</span> → 间接得策略</td>
+<td>直接学 <span class="math math-inline">$\pi_\theta(a\mid s)$</span></td>
+</tr>
+<tr>
+<td>动作空间</td>
+<td>离散友好</td>
+<td>离散 / <strong>连续都可</strong></td>
+</tr>
+<tr>
+<td>策略形式</td>
+<td>通常确定性（<span class="math math-inline">$\arg\max Q$</span>）</td>
+<td><strong>天然随机策略</strong></td>
+</tr>
+<tr>
+<td>收敛性</td>
+<td>局部最优、可能震荡</td>
+<td>局部最优、方差大</td>
+</tr>
+<tr>
+<td>数据复用</td>
+<td>off-policy，可用 replay</td>
+<td><strong>on-policy，采样数据只用一次</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2.-轨迹（Trajectory）与回报">2. 轨迹（Trajectory）与回报</h2>
+<p>一个回合（episode）产生的状态—动作序列称为<strong>轨迹</strong>：</p>
+<div class="math math-block">
+$$
+\tau = \{s_1, a_1, s_2, a_2, \dots, s_T, a_T\}
+$$
+</div>
+<p>在参数 <span class="math math-inline">$\theta$</span> 下，轨迹 <span class="math math-inline">$\tau$</span> 出现的概率：</p>
+<div class="math math-block">
+$$
+\begin{aligned}
+p_\theta(\tau)
+&= p(s_1)\,p_\theta(a_1\mid s_1)\,p(s_2\mid s_1,a_1)\,p_\theta(a_2\mid s_2)\cdots\\[4pt]
+&= p(s_1)\prod_{t=1}^{T} \underbrace{p_\theta(a_t\mid s_t)}_{\text{策略，可控}}\;\underbrace{p(s_{t+1}\mid s_t,a_t)}_{\text{环境，不可控}}
+\end{aligned}
+$$
+</div>
+<p>轨迹总回报：<span class="math math-inline">$R(\tau)=\sum_{t=1}^{T} r_t$</span>（<strong>注意 <span class="math math-inline">$R$</span> 不需要可微，甚至可以是黑盒/不可导的</strong>——这是 PG 相对于&quot;端到端可微&quot;方法的关键优势）。</p>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">奖励时间约定（全文统一）</span></div>
+  <div class="callout-body"><p>本教程统一采用：<strong><span class="math math-inline">$r_t$</span> 是在状态 <span class="math math-inline">$s_t$</span> 执行 <span class="math math-inline">$a_t$</span> 后立刻得到的奖励</strong>（与 <span class="math math-inline">$a_t$</span> 同步下标）。所以 <span class="math math-inline">$R(\tau)=\sum_{t=1}^T r_t$</span>，reward-to-go 从 <span class="math math-inline">$t'=t$</span> 起累加。<strong>部分经典教材（如 Sutton &amp; Barto）用 <span class="math math-inline">$r_{t+1}$</span> 标记&quot;<span class="math math-inline">$a_t$</span> 后才得到的奖励&quot;</strong>，两种约定本质等价、只是下标错一位——见 §6 末尾的换算说明。</p>
+</div>
+</div>
+<p><strong>优化目标</strong>：期望回报</p>
+<div class="math math-block">
+$$
+\bar R_\theta = \sum_\tau R(\tau)\, p_\theta(\tau) = \mathbb E_{\tau\sim p_\theta(\tau)}[R(\tau)]
+$$
+</div>
+<hr />
+<h2 id="3.-策略梯度推导（含-Log-Derivative-Trick）">3. 策略梯度推导（含 Log-Derivative Trick）</h2>
+<h3 id="Step-1-·-对目标求梯度">Step 1 · 对目标求梯度</h3>
+<div class="math math-block">
+$$
+\nabla_\theta \bar R_\theta
+= \sum_\tau R(\tau)\, \nabla_\theta\, p_\theta(\tau)
+$$
+</div>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">直接采样估计的障碍</span></div>
+  <div class="callout-body"><p>上式不是期望形式，无法直接用 <span class="math math-inline">$\tau\sim p_\theta$</span> 采样估计 —— 梯度算子里的 <span class="math math-inline">$\nabla p_\theta(\tau)$</span> 不再是概率分布。</p>
+</div>
+</div>
+<h3 id="Step-2-·-Log-Derivative-Trick（对数导数技巧）">Step 2 · Log-Derivative Trick（对数导数技巧）</h3>
+<p>利用恒等式（对任意可微正函数 <span class="math math-inline">$f$</span>）：</p>
+<div class="math math-block">
+$$
+\boxed{\;\nabla f(x) = f(x)\, \nabla \log f(x)\;}
+\quad\Longleftrightarrow\quad
+\nabla \log f(x) = \frac{\nabla f(x)}{f(x)}
+$$
+</div>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">为什么叫 &quot;log-derivative&quot;</span></div>
+  <div class="callout-body"><p><span class="math math-inline">$\dfrac{\partial}{\partial \theta}\log f(\theta) = \dfrac{1}{f(\theta)}\dfrac{\partial f(\theta)}{\partial \theta}$</span>，移项即得上式。它的威力：把&quot;概率本身的梯度&quot;换成&quot;概率乘上 log 概率的梯度&quot;，从而<strong>重建期望结构</strong>。</p>
+</div>
+</div>
+<h3 id="Step-3-·-换回期望形式">Step 3 · 换回期望形式</h3>
+<div class="math math-block">
+$$
+\begin{aligned}
+\nabla_\theta \bar R_\theta
+&= \sum_\tau R(\tau)\, \nabla p_\theta(\tau) \\
+&= \sum_\tau R(\tau)\, p_\theta(\tau)\, \frac{\nabla p_\theta(\tau)}{p_\theta(\tau)} \\
+&= \sum_\tau R(\tau)\, p_\theta(\tau)\, \nabla \log p_\theta(\tau) \\
+&= \mathbb E_{\tau\sim p_\theta(\tau)}\!\bigl[\, R(\tau)\, \nabla \log p_\theta(\tau)\,\bigr]
+\end{aligned}
+$$
+</div>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">关键转化</span></div>
+  <div class="callout-body"><p><span class="math math-inline">$\nabla$</span> 现在作用在 <span class="math math-inline">$\log p_\theta(\tau)$</span> 上，而<strong>外层是期望</strong>——可用蒙特卡洛采样无偏估计。</p>
+</div>
+</div>
+<h3 id="Step-4-·-拆开">Step 4 · 拆开 <span class="math math-inline">$\nabla \log p_\theta(\tau)$</span></h3>
+<div class="math math-block">
+$$
+\begin{aligned}
+\nabla \log p_\theta(\tau)
+&= \nabla\!\left[\log p(s_1) + \sum_{t=1}^{T}\log p_\theta(a_t\mid s_t) + \sum_{t=1}^{T}\log p(s_{t+1}\mid s_t,a_t)\right]\\
+&= \underbrace{\nabla \log p(s_1)}_{=\,0} + \sum_{t=1}^{T}\nabla\log p_\theta(a_t\mid s_t) + \underbrace{\sum_{t=1}^{T}\nabla\log p(s_{t+1}\mid s_t,a_t)}_{=\,0}\\
+&= \sum_{t=1}^{T}\nabla\log p_\theta(a_t\mid s_t)
+\end{aligned}
+$$
+</div>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">这一步消掉了环境</span></div>
+  <div class="callout-body"><p>初始分布 <span class="math math-inline">$p(s_1)$</span> 和转移 <span class="math math-inline">$p(s_{t+1}\mid s_t,a_t)$</span> 与 <span class="math math-inline">$\theta$</span> 无关，梯度全为 0。<strong>这就是为什么 PG 不需要知道环境模型（model-free）。</strong></p>
+</div>
+</div>
+<h3 id="Step-5-·-蒙特卡洛估计">Step 5 · 蒙特卡洛估计</h3>
+<p>采样 <span class="math math-inline">$N$</span> 条轨迹 <span class="math math-inline">$\{\tau^n\}_{n=1}^{N}$</span> 后：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+\nabla_\theta \bar R_\theta
+\approx \frac{1}{N}\sum_{n=1}^{N}\sum_{t=1}^{T_n}
+R(\tau^n)\, \nabla_\theta \log p_\theta(a_t^n\mid s_t^n)
+\;}\tag{PG}
+$$
+</div>
+<h3 id="Step-6-·-参数更新">Step 6 · 参数更新</h3>
+<p>梯度上升：</p>
+<div class="math math-block">
+$$
+\theta \leftarrow \theta + \eta\, \nabla_\theta \bar R_\theta
+$$
+</div>
+<p>学习率 <span class="math math-inline">$\eta$</span> 通常用 Adam / RMSProp 自适应。</p>
+<hr />
+<h2 id="4.-直观解读">4. 直观解读</h2>
+<p>公式 (PG) 的物理含义：</p>
+<ul>
+<li>若 <span class="math math-inline">$R(\tau^n)>0$</span> → 增大状态 <span class="math math-inline">$s_t^n$</span> 下采取 <span class="math math-inline">$a_t^n$</span> 的概率</li>
+<li>若 <span class="math math-inline">$R(\tau^n)<0$</span> → 减小该概率</li>
+<li><strong>权重就是整条轨迹的回报</strong></li>
+</ul>
+<h3 id="与监督分类的类比">与监督分类的类比</h3>
+<p>监督学习最大化对数似然：</p>
+<div class="math math-block">
+$$
+\frac{1}{N}\sum_n\sum_t \log p_\theta(a_t^n\mid s_t^n)
+$$
+</div>
+<p>策略梯度只是在每项前加权 <span class="math math-inline">$R(\tau^n)$</span>：</p>
+<div class="math math-block">
+$$
+\frac{1}{N}\sum_n\sum_t R(\tau^n)\, \log p_\theta(a_t^n\mid s_t^n)
+$$
+</div>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">实现视角</span></div>
+  <div class="callout-body"><p>PG 可写成&quot;加权交叉熵&quot;：用 one-hot 动作 vs 网络输出概率算交叉熵，再乘上权重 <span class="math math-inline">$R$</span>（或后文的 <span class="math math-inline">$G_t$</span>、<span class="math math-inline">$A_t$</span>）。框架中直接 <code>loss = -(weight * log_prob).mean()</code>。</p>
+</div>
+</div>
+<hr />
+<h2 id="5.-实现技巧（降方差三板斧）">5. 实现技巧（降方差三板斧）</h2>
+<p>朴素 PG 估计无偏但<strong>方差极大</strong>。三类技巧针对方差与有效性优化。</p>
+<h3 id="技巧-1-·-添加基线-Baseline">技巧 1 · 添加基线 Baseline</h3>
+<div class="callout callout-danger" style="border-left-color:#ef4444; background:#ef444414;">
+  <div class="callout-title"><span class="callout-icon">🔥</span><span class="callout-title-text">全正回报陷阱</span></div>
+  <div class="callout-body"><p>许多任务奖励恒为正（如打砖块得分 0~21）。所有 <span class="math math-inline">$R(\tau^n)$</span> 都为正 → <strong>所有采过的动作概率都被推高</strong>，未采样到的动作概率被相对压低。这在采样不充分时严重失真。</p>
+</div>
+</div>
+<p>减去一个<strong>不依赖动作 <span class="math math-inline">$a_t$</span> 的基线 <span class="math math-inline">$b$</span></strong>（可以是常数，也可以是只依赖状态的函数 <span class="math math-inline">$b(s_t)$</span>）：</p>
+<div class="math math-block">
+$$
+\nabla \bar R_\theta \approx \frac{1}{N}\sum_n\sum_t \bigl(R(\tau^n)-b\bigr)\nabla\log p_\theta(a_t^n\mid s_t^n)
+$$
+</div>
+<ul>
+<li>常用 <span class="math math-inline">$b \approx \mathbb E[R(\tau)]$</span>（训练时的滑动均值）；进阶版本用 <span class="math math-inline">$b(s_t)=V^{\pi_\theta}(s_t)$</span></li>
+<li><strong>方差显著降低</strong>：把奖励信号&quot;居中化&quot;</li>
+</ul>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">为什么减去 baseline 仍然无偏（关键推导）</span></div>
+  <div class="callout-body"><p>只要 <span class="math math-inline">$b$</span> 不依赖将被求梯度的动作 <span class="math math-inline">$a_t$</span>（即 <span class="math math-inline">$b$</span> 是常数或仅是 <span class="math math-inline">$s_t$</span> 的函数），那么它额外贡献的那一项严格为零：</p>
+<div class="math math-block">
+$$
+\mathbb E_{\tau\sim p_\theta}\!\bigl[b\,\nabla_\theta\log p_\theta(\tau)\bigr]
+= b\sum_\tau p_\theta(\tau)\,\nabla_\theta\log p_\theta(\tau)
+= b\sum_\tau \nabla_\theta p_\theta(\tau)
+= b\,\nabla_\theta\!\underbrace{\sum_\tau p_\theta(\tau)}_{=\,1}
+= b\cdot\nabla_\theta 1 = 0
+$$
+</div>
+<p>关键两步：① <span class="math math-inline">$p\,\nabla\log p = \nabla p$</span>（log-derivative trick 反向用）；② 概率求和恒为 <span class="math math-inline">$1$</span>，对 <span class="math math-inline">$\theta$</span> 求梯度自然为 0。
+把 <span class="math math-inline">$b$</span> 换成 <span class="math math-inline">$b(s_t)$</span> 时，只需把期望按 <span class="math math-inline">$\tau$</span> 分解到对 <span class="math math-inline">$a_t$</span> 求条件期望，结论同样成立：<span class="math math-inline">$\sum_{a_t}\pi_\theta(a_t\mid s_t)\nabla\log\pi_\theta(a_t\mid s_t)=\nabla\sum_{a_t}\pi_\theta(a_t\mid s_t)=\nabla 1=0$</span>。</p>
+</div>
+</div>
+<h3 id="技巧-2-·-合理分配信用（Credit-Assignment）">技巧 2 · 合理分配信用（Credit Assignment）</h3>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">同回合内权重相同不合理</span></div>
+  <div class="callout-body"><p>朴素 PG 给同一轨迹中<strong>每一步</strong>都乘上<strong>整条轨迹的总回报</strong> <span class="math math-inline">$R(\tau^n)$</span>。但若 <span class="math math-inline">$t$</span> 时刻的动作发生在某次大失误<strong>之前</strong>，它不该被那次失误的负分惩罚。</p>
+</div>
+</div>
+<h4 id="改进-A：只用从-之后的奖励（reward-to-go）">改进 A：只用从 <span class="math math-inline">$t$</span> 之后的奖励（reward-to-go）</h4>
+<div class="math math-block">
+$$
+\nabla \bar R_\theta \approx
+\frac{1}{N}\sum_n\sum_{t=1}^{T_n}
+\Bigl(\underbrace{\textstyle\sum_{t'=t}^{T_n} r_{t'}^n}_{\text{未来累积回报}} - b\Bigr)
+\nabla\log p_\theta(a_t^n\mid s_t^n)
+$$
+</div>
+<h4 id="改进-B：加折扣因子">改进 B：加折扣因子 <span class="math math-inline">$\gamma$</span></h4>
+<div class="math math-block">
+$$
+\nabla \bar R_\theta \approx
+\frac{1}{N}\sum_n\sum_{t=1}^{T_n}
+\Bigl(\sum_{t'=t}^{T_n} \gamma^{\,t'-t}\, r_{t'}^n - b\Bigr)
+\nabla\log p_\theta(a_t^n\mid s_t^n)
+$$
+</div>
+<ul>
+<li><span class="math math-inline">$\gamma\in[0,1]$</span>，常用 <span class="math math-inline">$0.9$</span> / <span class="math math-inline">$0.99$</span></li>
+<li><span class="math math-inline">$\gamma=0$</span> 只看即时回报；<span class="math math-inline">$\gamma=1$</span> 未来与当下等权</li>
+<li>直觉：动作 <span class="math math-inline">$a_t$</span> 对越远的未来影响越弱</li>
+</ul>
+<p><strong>示例</strong>：若 <span class="math math-inline">$a_t,a_{t+1},a_{t+2}$</span> 各得 <span class="math math-inline">$+1,+3,-5$</span>，则 <span class="math math-inline">$a_t$</span> 的折扣回报为
+<span class="math math-inline">$1 + \gamma\cdot 3 + \gamma^2\cdot(-5)$</span>。</p>
+<h3 id="技巧-3-·-优势函数-Advantage">技巧 3 · 优势函数 Advantage</h3>
+<p>把&quot;reward-to-go − baseline&quot;整体记为<strong>优势函数的一个蒙特卡洛估计</strong>：</p>
+<div class="math math-block">
+$$
+\hat A^{\theta}(s_t,a_t) \;\triangleq\; \underbrace{\Bigl(\sum_{t'=t}^{T}\gamma^{t'-t}r_{t'}\Bigr)}_{\text{未来折扣回报 (用整条轨迹估 }Q(s_t,a_t)\text{)}} \;-\; \underbrace{b(s_t)}_{\text{基线 (估 }V(s_t)\text{)}}
+$$
+</div>
+<p>严格意义上的<strong>优势函数</strong>定义为 <span class="math math-inline">$A^\pi(s,a)=Q^\pi(s,a)-V^\pi(s)$</span>；上式只是它的一个采样估计。</p>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">从常数 baseline 到状态依赖 baseline</span></div>
+  <div class="callout-body"><ul>
+<li>技巧 1 用的是<strong>常数 baseline</strong> <span class="math math-inline">$b\approx \mathbb E[R(\tau)]$</span> —— 简单、无偏（由上节论证）。</li>
+<li>这里升级为<strong>状态依赖 baseline</strong> <span class="math math-inline">$b(s_t)$</span> —— 同样无偏（关键：<span class="math math-inline">$b$</span> 不依赖 <span class="math math-inline">$a_t$</span>），但<strong>方差更低</strong>：不同状态本身回报水平不同，按状态居中化更精细。</li>
+<li>最佳选择是 <span class="math math-inline">$b(s_t)=V^{\pi_\theta}(s_t)$</span>，于是 <span class="math math-inline">$\hat A\approx Q-V$</span>，正好对齐优势函数定义。</li>
+</ul>
+</div>
+</div>
+<p>含义：在 <span class="math math-inline">$s_t$</span> 选 <span class="math math-inline">$a_t$</span> 比&quot;该状态平均水平&quot;好多少（<strong>相对优势</strong>）。
+当 <span class="math math-inline">$b(s_t)$</span> 用一个网络 <span class="math math-inline">$V_\phi(s_t)$</span> 来估计时，估计这个值函数的网络就叫 <strong>Critic</strong> —— 这是通向 <strong>Actor-Critic / A2C / PPO</strong> 的桥梁。</p>
+<pre><code class="language-dot">digraph G {
+  rankdir=LR; node [shape=box, style=rounded];
+  raw [label=&quot;朴素 PG\nR(τ)·∇log π&quot;];
+  b   [label=&quot;+ Baseline\n(R-b)·∇log π&quot;];
+  cr  [label=&quot;+ Credit\n(reward-to-go)&quot;];
+  adv [label=&quot;Advantage\nA(s,a)·∇log π&quot;];
+  ac  [label=&quot;Actor-Critic\nA = Q - V&quot;];
+  raw -&gt; b -&gt; cr -&gt; adv -&gt; ac;
+}
+</code></pre>
+<hr />
+<h2 id="6.-REINFORCE：蒙特卡洛策略梯度">6. REINFORCE：蒙特卡洛策略梯度</h2>
+<p><strong>定义</strong>：用一条完整回合的采样数据，把每步的&quot;未来折扣回报&quot; <span class="math math-inline">$G_t$</span> 代进 (PG)：</p>
+<div class="math math-block">
+$$
+\nabla \bar R_\theta \approx
+\frac{1}{N}\sum_{n=1}^{N}\sum_{t=1}^{T_n}
+G_t^n\, \nabla\log \pi_\theta(a_t^n\mid s_t^n)
+$$
+</div>
+<p>其中（沿用 §2 的约定 <span class="math math-inline">$r_t$</span> 与 <span class="math math-inline">$a_t$</span> 同步）：</p>
+<div class="math math-block">
+$$
+G_t \;=\; \sum_{k=t}^{T}\gamma^{\,k-t}\, r_k
+\;=\; r_t + \gamma\, G_{t+1}
+$$
+</div>
+<p>验证递推：<span class="math math-inline">$r_t+\gamma G_{t+1}=r_t+\gamma\sum_{k=t+1}^T\gamma^{k-t-1}r_k=r_t+\sum_{k=t+1}^T\gamma^{k-t}r_k=\sum_{k=t}^T\gamma^{k-t}r_k=G_t$</span> ✓</p>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">实现细节</span></div>
+  <div class="callout-body"><p>用递推式 <span class="math math-inline">$G_t = r_t+\gamma G_{t+1}$</span>，<strong>从后往前</strong>计算更高效：先算 <span class="math math-inline">$G_T=r_T$</span>，回溯到 <span class="math math-inline">$G_1$</span>。</p>
+</div>
+</div>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">换算到 Sutton &amp; Barto 约定</span></div>
+  <div class="callout-body"><p>若把奖励标记成 <span class="math math-inline">$r_{t+1}$</span>（&quot;<span class="math math-inline">$a_t$</span> 后才得到&quot;），则 <span class="math math-inline">$G_t=\sum_{k=t+1}^T\gamma^{k-t-1}r_k=r_{t+1}+\gamma G_{t+1}$</span> —— 与本教程的形式只是下标整体平移一位。<strong>两种约定本质相同</strong>。</p>
+</div>
+</div>
+<h3 id="算法流程">算法流程</h3>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">REINFORCE 伪代码</span></div>
+  <div class="callout-body"><ol>
+<li>初始化策略 <span class="math math-inline">$\pi_\theta$</span></li>
+<li><strong>repeat</strong>：
+<ol>
+<li>用 <span class="math math-inline">$\pi_\theta$</span> 与环境交互，采一条完整轨迹 <span class="math math-inline">$\{(s_t,a_t,r_t)\}_{t=1}^{T}$</span></li>
+<li>从后往前计算 <span class="math math-inline">$G_t$</span></li>
+<li>（可选）对 <span class="math math-inline">$G_t$</span> 做归一化（减均值除标准差）作为基线</li>
+<li>构造损失 <span class="math math-inline">$\mathcal L(\theta) = -\dfrac{1}{T}\sum_t G_t\,\log \pi_\theta(a_t\mid s_t)$</span></li>
+<li>反向传播一步：<span class="math math-inline">$\theta\leftarrow\theta - \eta\nabla_\theta\mathcal L$</span></li>
+</ol>
+</li>
+<li><strong>until</strong> 收敛</li>
+</ol>
+</div>
+</div>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">On-policy</span></div>
+  <div class="callout-body"><p>采样得到的轨迹 <strong>只能用于一次更新</strong>，更新完就丢弃，必须用新策略重新采样。这是 PG 类方法的样本效率瓶颈，也是 PPO/TRPO 提出 importance sampling 的动机。</p>
+</div>
+</div>
+<h3 id="One-hot-实现要点">One-hot 实现要点</h3>
+<p><code>log_prob</code> 的实际计算：</p>
+<ol>
+<li>网络输出 logits → softmax → 概率向量 <span class="math math-inline">$\mathbf p = [0.2, 0.5, 0.3]$</span></li>
+<li>实际动作 <span class="math math-inline">$a_t=1$</span> → one-hot <span class="math math-inline">$[0,1,0]$</span></li>
+<li><span class="math math-inline">$\log \pi_\theta(a_t|s_t) = \text{onehot}\cdot \log\mathbf p$</span>（PyTorch 用 <code>Categorical(logits).log_prob(action)</code> 一步搞定）</li>
+</ol>
+<h3 id="与监督学习的对比">与监督学习的对比</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>监督分类（CE）</th>
+<th>REINFORCE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>损失</td>
+<td><span class="math math-inline">$-\sum y_i\log p_i$</span></td>
+<td><span class="math math-inline">$-\sum G_t \log \pi_\theta(a_t\mid s_t)$</span></td>
+</tr>
+<tr>
+<td>标签</td>
+<td>真值 <span class="math math-inline">$y$</span>，<strong>已知正确</strong></td>
+<td>实际采样的 <span class="math math-inline">$a_t$</span>，<strong>对错未知</strong></td>
+</tr>
+<tr>
+<td>权重</td>
+<td>1</td>
+<td><span class="math math-inline">$G_t$</span>（越大→越该模仿这次动作）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7.-实操清单-/-Cheat-Sheet">7. 实操清单 / Cheat Sheet</h2>
+<div class="callout callout-checklist" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✅</span><span class="callout-title-text">一段最小可用伪代码</span></div>
+  <div class="callout-body"><pre><code class="language-python">for episode in range(N):
+    states, actions, rewards = rollout(env, policy)        # on-policy 采一回合
+    G = discounted_returns(rewards, gamma=0.99)            # 后向累加
+    G = (G - G.mean()) / (G.std() + 1e-8)                  # baseline + 归一化
+    logp = policy.log_prob(states, actions)                # 神经网络前向
+    loss = -(G * logp).mean()                              # 加权交叉熵
+    optimizer.zero_grad(); loss.backward(); optimizer.step()
+</code></pre>
+</div>
+</div>
+<div class="callout callout-summary" style="border-left-color:#64748b; background:#64748b14;">
+  <div class="callout-title"><span class="callout-icon">📌</span><span class="callout-title-text">常见坑</span></div>
+  <div class="callout-body"><ul>
+<li><strong>忘记负号</strong>：PyTorch 默认 minimize，PG 是 maximize → <code>loss = -(...)</code></li>
+<li><strong><span class="math math-inline">$G_t$</span> 未归一化</strong> → 梯度方差爆炸</li>
+<li><strong>复用旧数据</strong> → 偏离 on-policy 假设，必须丢弃</li>
+<li><strong>熵塌缩</strong>：分布过早 deterministic → 加 <strong>entropy bonus</strong> <code>+ β·H(π)</code></li>
+<li><strong>学习率过大</strong>：策略一步跳得太远 → 用 PPO 的 clip 或 KL 约束</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="8.-一图总览">8. 一图总览</h2>
+<pre><code class="language-dot">digraph PG {
+  rankdir=TB; node [shape=box, style=&quot;rounded,filled&quot;, fillcolor=&quot;#f0f4ff&quot;];
+  obj  [label=&quot;目标\n𝔼[R(τ)]&quot;];
+  trick[label=&quot;Log-Derivative Trick\n∇p = p·∇log p&quot;, fillcolor=&quot;#fff4d6&quot;];
+  exp  [label=&quot;梯度 = 𝔼[R·∇log p_θ(τ)]&quot;];
+  decomp[label=&quot;∇log p_θ(τ) = Σ ∇log π_θ(a_t|s_t)\n（环境项消掉）&quot;];
+  mc   [label=&quot;MC 估计\n(1/N)ΣΣ R(τⁿ)·∇log π&quot;];
+  pg   [label=&quot;朴素 PG&quot;];
+  reinforce[label=&quot;REINFORCE: 用 G_t 替换 R(τ)&quot;, fillcolor=&quot;#d6ffd6&quot;];
+  base [label=&quot;+ Baseline (减方差)&quot;];
+  adv  [label=&quot;+ Advantage A(s,a)\n→ Actor-Critic&quot;, fillcolor=&quot;#ffd6d6&quot;];
+
+  obj -&gt; trick -&gt; exp -&gt; decomp -&gt; mc -&gt; pg;
+  pg -&gt; reinforce -&gt; base -&gt; adv;
+}
+</code></pre>
+<hr />
+<h2 id="9.-进一步阅读-/-关联笔记">9. 进一步阅读 / 关联笔记</h2>
+<ul>
+<li><span class="wikilink" data-target="Actor-Critic教程" title="Actor-Critic教程">Actor-Critic</span> —— 用 Critic 网络给出 baseline / advantage</li>
+<li><span class="wikilink" data-target="PPO教程" title="PPO教程">PPO</span> —— 用 clipped importance ratio 让&quot;采到的数据&quot;能多次复用</li>
+<li><span class="wikilink" data-target="TRPO" title="TRPO">TRPO</span> —— 加 KL 约束的策略更新</li>
+<li><span class="wikilink" data-target="GAE" title="GAE">GAE</span>（Generalized Advantage Estimation）—— 用 <span class="math math-inline">$\lambda$</span> 在 bias-variance 之间权衡</li>
+<li>原文：<a href="https://datawhalechina.github.io/easy-rl/#/chapter4/chapter4" target="_blank" rel="noopener noreferrer">Easy-RL · 第 4 章 策略梯度</a></li>
+</ul>
+
+</main>
+</body>
+</html>

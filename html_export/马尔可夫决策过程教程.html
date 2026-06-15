@@ -1,0 +1,874 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>马尔可夫决策过程（MDP）高密度教程</title>
+  <link rel="stylesheet" href="_assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3/lib/viz-standalone.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async function () {
+      // 1. highlight.js — only on blocks that opted in via language-XXX class
+      try {
+        document.querySelectorAll('pre code').forEach(function (block) {
+          if (block.classList.contains('language-dot')) return;
+          if (block.classList.contains('language-mermaid')) return;
+          // Skip auto-detect on un-tagged blocks (e.g. ASCII diagrams) — hljs
+          // mis-classifies short text and recolours it badly.
+          var hasLang = false;
+          for (var i = 0; i < block.classList.length; i++) {
+            if (block.classList[i].indexOf('language-') === 0) { hasLang = true; break; }
+          }
+          if (!hasLang) return;
+          window.hljs && window.hljs.highlightElement(block);
+        });
+      } catch (e) { console.warn('hljs failed', e); }
+
+      // 2. Graphviz: replace <pre><code class="language-dot"> with rendered SVG
+      try {
+        if (window.Viz && typeof window.Viz.instance === 'function') {
+          const vizInstance = await window.Viz.instance();
+          document.querySelectorAll('pre code.language-dot').forEach(function (block) {
+            try {
+              const svg = vizInstance.renderSVGElement(block.textContent);
+              const wrapper = document.createElement('div');
+              wrapper.className = 'graphviz';
+              wrapper.appendChild(svg);
+              block.parentElement.replaceWith(wrapper);
+            } catch (err) {
+              console.error('viz render failed', err);
+              block.parentElement.classList.add('graphviz-error');
+            }
+          });
+        } else {
+          console.warn('viz-js not loaded');
+        }
+      } catch (e) { console.warn('viz init failed', e); }
+
+      // 3. Mermaid
+      try {
+        if (window.mermaid) {
+          window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+          await window.mermaid.run({ querySelector: 'pre.mermaid' });
+        }
+      } catch (e) { console.warn('mermaid failed', e); }
+
+      // 4. KaTeX last so it does not fight hljs/viz
+      try {
+        if (window.renderMathInElement) {
+          window.renderMathInElement(document.body, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$',  right: '$',  display: false }
+            ],
+            throwOnError: false,
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+          });
+        }
+      } catch (e) { console.warn('katex failed', e); }
+    });
+  </script>
+</head>
+<body>
+<header class="meta">
+  <h1 class="doc-title">马尔可夫决策过程（MDP）高密度教程</h1>
+  <div class="meta-row">
+    <span class="meta-tags"><span class="meta-tag">#强化学习</span><span class="meta-tag">#MDP</span><span class="meta-tag">#贝尔曼方程</span><span class="meta-tag">#策略迭代</span><span class="meta-tag">#价值迭代</span><span class="meta-tag">#动态规划</span></span>
+    <span class="meta-source">来源：<a href="https://datawhalechina.github.io/easy-rl/#/chapter2/chapter2">https://datawhalechina.github.io/easy-rl/#/chapter2/chapter2</a></span>
+    <span class="meta-date">2026-06-14</span>
+  </div>
+</header>
+
+<main class="doc">
+<h1 id="马尔可夫决策过程（Markov-Decision-Process,-MDP）">马尔可夫决策过程（Markov Decision Process, MDP）</h1>
+<div class="callout callout-abstract" style="border-left-color:#7c3aed; background:#7c3aed14;">
+  <div class="callout-title"><span class="callout-icon">📋</span><span class="callout-title-text">一句话</span></div>
+  <div class="callout-body"><p><strong>MDP 是强化学习的基本框架</strong>：用 <span class="math math-inline">$\langle S,A,P,R,\gamma\rangle$</span> 五元组描述&quot;智能体—环境&quot;交互，把&quot;未来只依赖现在&quot;的<strong>马尔可夫性</strong>与&quot;动作影响转移&quot;的<strong>决策性</strong>捏在一起；其灵魂是<strong>贝尔曼方程</strong>——把&quot;现在的价值&quot;递归地写成&quot;即时奖励 + 折扣后的未来价值&quot;——并据此衍生出<strong>策略评估</strong>（预测）与<strong>策略迭代 / 价值迭代</strong>（控制）两条求解路径。</p>
+</div>
+</div>
+<hr />
+<h2 id="1.-三层抽象：MP-→-MRP-→-MDP">1. 三层抽象：MP → MRP → MDP</h2>
+<p>强化学习里&quot;环境的形式化模型&quot;是按&quot;加东西&quot;逐层堆叠的：</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>马尔可夫过程 MP</th>
+<th>马尔可夫奖励过程 MRP</th>
+<th>马尔可夫决策过程 MDP</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>元组</td>
+<td><span class="math math-inline">$\langle S, P\rangle$</span></td>
+<td><span class="math math-inline">$\langle S, P, R, \gamma\rangle$</span></td>
+<td><span class="math math-inline">$\langle S, A, P, R, \gamma\rangle$</span></td>
+</tr>
+<tr>
+<td>状态转移</td>
+<td><span class="math math-inline">$p(s'\mid s)$</span></td>
+<td><span class="math math-inline">$p(s'\mid s)$</span></td>
+<td><span class="math math-inline">$p(s'\mid s,a)$</span></td>
+</tr>
+<tr>
+<td>奖励</td>
+<td>—</td>
+<td><span class="math math-inline">$R(s)$</span></td>
+<td><span class="math math-inline">$R(s,a)$</span></td>
+</tr>
+<tr>
+<td>动作</td>
+<td>—</td>
+<td>—</td>
+<td><span class="math math-inline">$A$</span>（智能体可选）</td>
+</tr>
+<tr>
+<td>直观类比</td>
+<td>纸船随波逐流</td>
+<td>纸船随波逐流 + 沿途捡硬币</td>
+<td><strong>摆渡人掌舵</strong> + 沿途捡硬币</td>
+</tr>
+<tr>
+<td>求解对象</td>
+<td>轨迹分布</td>
+<td>价值函数 <span class="math math-inline">$V(s)$</span></td>
+<td>价值 <span class="math math-inline">$V_\pi/Q_\pi$</span> + 最优策略 <span class="math math-inline">$\pi^*$</span></td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">直觉串联</span></div>
+  <div class="callout-body"><p>MP 只关心&quot;状态如何流动&quot;；MRP 加入奖励 → 可以谈&quot;价值&quot;；MDP 加入动作 → 可以谈&quot;决策&quot;，从评估变为控制。<strong>MDP 给定策略 <span class="math math-inline">$\pi$</span> 即退化为 MRP</strong>（动作维度被 <span class="math math-inline">$\pi(a\mid s)$</span> 加权求和&quot;边缘化&quot;掉）——这是后续推导的关键技巧。</p>
+</div>
+</div>
+<hr />
+<h2 id="2.-马尔可夫过程（MP）">2. 马尔可夫过程（MP）</h2>
+<h3 id="2.1-马尔可夫性质">2.1 马尔可夫性质</h3>
+<p>给定历史 <span class="math math-inline">$h_t=\{s_1,\dots,s_t\}$</span>，未来只依赖当前：</p>
+<div class="math math-block">
+$$
+\boxed{\;p(s_{t+1}\mid s_t)=p(s_{t+1}\mid h_t)\;}\tag{2.1}
+$$
+</div>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">为什么这一步是&quot;基础公设&quot;</span></div>
+  <div class="callout-body"><p>马尔可夫性把&quot;无限长历史&quot;压缩为&quot;有限长状态&quot;，让动态规划/贝尔曼方程可以<strong>只对状态 <span class="math math-inline">$s$</span> 做递归</strong>。一旦真实问题不满足，工程上要么把更长的历史塞进状态（堆叠帧、RNN 隐状态），要么承认&quot;部分可观测&quot;走 POMDP。</p>
+</div>
+</div>
+<h3 id="2.2-状态转移矩阵">2.2 状态转移矩阵</h3>
+<p>对有限状态集 <span class="math math-inline">$\{s_1,\dots,s_N\}$</span>，转移概率排成矩阵：</p>
+<div class="math math-block">
+$$
+\boldsymbol P=\begin{pmatrix}
+p(s_1\mid s_1) & p(s_2\mid s_1) & \cdots & p(s_N\mid s_1) \\
+p(s_1\mid s_2) & p(s_2\mid s_2) & \cdots & p(s_N\mid s_2) \\
+\vdots & \vdots & \ddots & \vdots \\
+p(s_1\mid s_N) & p(s_2\mid s_N) & \cdots & p(s_N\mid s_N)
+\end{pmatrix}
+$$
+</div>
+<p>每一行表示&quot;从 <span class="math math-inline">$s_i$</span> 出发到所有状态&quot;的概率分布（<strong>行和为 1</strong>）。</p>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">行 vs 列</span></div>
+  <div class="callout-body"><p>教材约定 <span class="math math-inline">$\boldsymbol P_{ij}=p(s_j\mid s_i)$</span>（<strong>from i to j</strong>）。读论文/代码时务必确认转置约定，否则迭代会算反。</p>
+</div>
+</div>
+<p>采样马尔可夫链 → 得到一串<strong>轨迹</strong> <span class="math math-inline">$s_3, s_4, s_5, s_6, s_6,\dots$</span>。</p>
+<hr />
+<h2 id="3.-马尔可夫奖励过程（MRP）">3. 马尔可夫奖励过程（MRP）</h2>
+<p>MRP <span class="math math-inline">$=$</span> MP <span class="math math-inline">$+$</span> 奖励函数 <span class="math math-inline">$R(s)$</span> <span class="math math-inline">$+$</span> 折扣因子 <span class="math math-inline">$\gamma\in[0,1]$</span>。</p>
+<h3 id="3.1-回报与价值函数">3.1 回报与价值函数</h3>
+<p><strong>回报（return）</strong> = 时刻 <span class="math math-inline">$t$</span> 之后所有奖励的折扣和：</p>
+<div class="math math-block">
+$$
+G_t = r_{t+1} + \gamma r_{t+2} + \gamma^2 r_{t+3} + \cdots + \gamma^{T-t-1} r_T
+$$
+</div>
+<p><strong>状态价值函数（state-value function）</strong> = 从 <span class="math math-inline">$s$</span> 出发的期望回报：</p>
+<div class="math math-block">
+$$
+V(s) = \mathbb E[G_t\mid s_t = s]
+$$
+</div>
+<h3 id="3.2-为什么需要折扣因子-？（核心问题）">3.2 为什么需要折扣因子 <span class="math math-inline">$\gamma$</span>？（核心问题）</h3>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">折扣因子 <span class="math math-inline">$\gamma$</span> 的四个动机</span></div>
+  <div class="callout-body"><ol>
+<li><strong>避免无穷回报</strong>：MRP 可能带环、不终结，<span class="math math-inline">$\gamma<1$</span> 让 <span class="math math-inline">$\sum \gamma^k r$</span> 几何收敛。</li>
+<li><strong>不确定性贴现</strong>：我们对未来环境的建模并不精确，越远的预测越不可信 → 打折相当于&quot;自我怀疑&quot;。</li>
+<li><strong>金融贴现</strong>：现在 1 块钱比一年后 1 块钱更值钱（机会成本/通胀）。</li>
+<li><strong>行为偏好</strong>：让智能体倾向&quot;早拿奖励&quot;，避免无意义拖延。</li>
+</ol>
+<p>极端：<span class="math math-inline">$\gamma=0$</span> → 短视（只看即时）；<span class="math math-inline">$\gamma=1$</span> → 远视（要求有终止状态，否则发散）。<span class="math math-inline">$\gamma$</span> 是 RL 里最重要的<strong>超参数</strong>之一，调它就是在调&quot;耐心程度&quot;。</p>
+</div>
+</div>
+<h3 id="3.3-一个具体例子">3.3 一个具体例子</h3>
+<p>七状态 MRP（图 2.4），奖励向量 <span class="math math-inline">$\boldsymbol R=[5,0,0,0,0,0,10]$</span>，<span class="math math-inline">$\gamma=0.5$</span>。对 4 步轨迹采样回报：</p>
+<table>
+<thead>
+<tr>
+<th>轨迹</th>
+<th>计算</th>
+<th><span class="math math-inline">$G$</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math math-inline">$s_4\to s_5\to s_6\to s_7$</span></td>
+<td><span class="math math-inline">$0+0.5\cdot 0 + 0.25\cdot 0 + 0.125\cdot 10$</span></td>
+<td><strong>1.25</strong></td>
+</tr>
+<tr>
+<td><span class="math math-inline">$s_4\to s_3\to s_2\to s_1$</span></td>
+<td><span class="math math-inline">$0+0.5\cdot 0 + 0.25\cdot 0 + 0.125\cdot 5$</span></td>
+<td><strong>0.625</strong></td>
+</tr>
+<tr>
+<td><span class="math math-inline">$s_4\to s_5\to s_6\to s_6$</span></td>
+<td><span class="math math-inline">$0+0.5\cdot 0 + 0.25\cdot 0 + 0.125\cdot 0$</span></td>
+<td><strong>0</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">蒙特卡洛估值的局限</span></div>
+  <div class="callout-body"><p>想得到 <span class="math math-inline">$V(s_4)$</span>，可以采样很多轨迹取平均（<strong>MC 估计</strong>）。但 MC 必须<strong>等回合结束</strong>才能更新一次，方差大、样本效率低——这正是后面要用贝尔曼方程做&quot;自举&quot;的动机。</p>
+</div>
+</div>
+<hr />
+<h2 id="4.-贝尔曼方程（核心！）">4. 贝尔曼方程（核心！）</h2>
+<h3 id="4.1-形式">4.1 形式</h3>
+<div class="math math-block">
+$$
+\boxed{\;V(s) = \underbrace{R(s)}_{\text{即时奖励}} + \underbrace{\gamma\sum_{s'\in S} p(s'\mid s)\,V(s')}_{\text{未来折扣价值}}\;}
+$$
+</div>
+<p>含义：<strong>当前状态的价值 = 即时拿到的奖励 + 按转移概率加权的&quot;邻居价值&quot;再打折</strong>。</p>
+<h3 id="4.2-推导（分-Step）">4.2 推导（分 Step）</h3>
+<p><strong>前置工具</strong>：全期望公式 <span class="math math-inline">$\mathbb E[\mathbb E[G_{t+1}\mid s_{t+1}]\mid s_t] = \mathbb E[G_{t+1}\mid s_t]$</span>。</p>
+<h4 id="Step-1-·-拆开-的定义">Step 1 · 拆开 <span class="math math-inline">$G_t$</span> 的定义</h4>
+<div class="math math-block">
+$$
+V(s)=\mathbb E[G_t\mid s_t=s]=\mathbb E\!\left[r_{t+1}+\gamma r_{t+2}+\gamma^2 r_{t+3}+\cdots\;\middle|\;s_t=s\right]
+$$
+</div>
+<h4 id="Step-2-·-提取第一项-+-提公因子">Step 2 · 提取第一项 + 提公因子 <span class="math math-inline">$\gamma$</span></h4>
+<div class="math math-block">
+$$
+V(s) = \mathbb E[r_{t+1}\mid s_t=s] + \gamma\,\mathbb E\!\left[r_{t+2}+\gamma r_{t+3}+\cdots\;\middle|\;s_t=s\right]
+$$
+</div>
+<p>后一项的括号内正好是 <span class="math math-inline">$G_{t+1}$</span>，所以：</p>
+<div class="math math-block">
+$$
+V(s) = R(s) + \gamma\,\mathbb E[G_{t+1}\mid s_t=s]
+$$
+</div>
+<h4 id="Step-3-·-用全期望&quot;穿过&quot;">Step 3 · 用全期望&quot;穿过&quot; <span class="math math-inline">$s_{t+1}$</span></h4>
+<div class="math math-block">
+$$
+\mathbb E[G_{t+1}\mid s_t=s]=\mathbb E\!\big[\mathbb E[G_{t+1}\mid s_{t+1}]\;\big|\;s_t=s\big]=\mathbb E[V(s_{t+1})\mid s_t=s]
+$$
+</div>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">关键转折点</span></div>
+  <div class="callout-body"><p>这一步把&quot;对未来所有 reward 的期望&quot;折叠回&quot;对下一状态价值的期望&quot;——<strong>回报变量 <span class="math math-inline">$G$</span> 消失了，只剩下 <span class="math math-inline">$V$</span> 自己的递归</strong>。这就是动态规划的根，也是后续所有自举方法的母体。</p>
+</div>
+</div>
+<h4 id="Step-4-·-写成-sum-形式">Step 4 · 写成 sum 形式</h4>
+<div class="math math-block">
+$$
+\mathbb E[V(s_{t+1})\mid s_t=s]=\sum_{s'\in S} p(s'\mid s)\,V(s')
+$$
+</div>
+<p>代回 Step 2 即得贝尔曼方程。 <span class="math math-inline">$\square$</span></p>
+<h3 id="4.3-矩阵形式与解析解">4.3 矩阵形式与解析解</h3>
+<p>把所有状态堆成向量 <span class="math math-inline">$\boldsymbol V, \boldsymbol R\in\mathbb R^N$</span>：</p>
+<div class="math math-block">
+$$
+\boldsymbol V = \boldsymbol R + \gamma \boldsymbol P\boldsymbol V
+\quad\Longrightarrow\quad (\boldsymbol I-\gamma\boldsymbol P)\boldsymbol V = \boldsymbol R
+$$
+</div>
+<div class="math math-block">
+$$
+\boxed{\;\boldsymbol V = (\boldsymbol I-\gamma\boldsymbol P)^{-1}\boldsymbol R\;}\tag{解析解}
+$$
+</div>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">解析解的代价</span></div>
+  <div class="callout-body"><p>矩阵求逆复杂度 <span class="math math-inline">$O(N^3)$</span>。状态空间一旦上到 <span class="math math-inline">$10^4$</span> 量级（不要说百万），求逆既慢又数值不稳。<strong>实际几乎不用解析解</strong>，而走以下三类迭代法。</p>
+</div>
+</div>
+<h3 id="4.4-三类迭代解法（为后续章节铺垫）">4.4 三类迭代解法（为后续章节铺垫）</h3>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>是否需要环境模型</th>
+<th>是否自举 bootstrap</th>
+<th>何时更新</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>动态规划 DP</strong></td>
+<td>需要 <span class="math math-inline">$P,R$</span> 已知</td>
+<td>✅</td>
+<td>每步</td>
+</tr>
+<tr>
+<td><strong>蒙特卡洛 MC</strong></td>
+<td>不需要</td>
+<td>❌（用完整 <span class="math math-inline">$G_t$</span>）</td>
+<td>回合结束</td>
+</tr>
+<tr>
+<td><strong>时序差分 TD</strong></td>
+<td>不需要</td>
+<td>✅</td>
+<td>每步</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">自举（bootstrapping）</span></div>
+  <div class="callout-body"><p>&quot;用对其它状态的估计值，来更新当前状态的估计值&quot;——典型 DP / TD 思路。它让你<strong>不必等回合结束</strong>就能更新（VS MC），代价是引入&quot;估计的估计&quot;带来的偏差。本章只用 DP（环境已知），TD/MC 是第 3、4 章的故事。</p>
+</div>
+</div>
+<hr />
+<h2 id="5.-从-MRP-到-MDP：加入动作">5. 从 MRP 到 MDP：加入动作</h2>
+<p>MDP 在 MRP 基础上加入<strong>动作空间</strong> <span class="math math-inline">$A$</span>，状态转移和奖励都&quot;附带动作&quot;：</p>
+<div class="math math-block">
+$$
+p(s'\mid s,a),\qquad R(s,a)=\mathbb E[r_t\mid s_t=s, a_t=a]
+$$
+</div>
+<h3 id="5.1-策略">5.1 策略 <span class="math math-inline">$\pi$</span></h3>
+<p>策略给定&quot;在状态 <span class="math math-inline">$s$</span> 选动作 <span class="math math-inline">$a$</span> 的概率&quot;：</p>
+<div class="math math-block">
+$$
+\pi(a\mid s) = p(a_t=a\mid s_t=s)
+$$
+</div>
+<ul>
+<li><strong>随机策略</strong>：<span class="math math-inline">$\pi(\cdot\mid s)$</span> 是概率分布</li>
+<li><strong>确定性策略</strong>：<span class="math math-inline">$\pi(s)$</span> 直接输出一个动作（等价于 one-hot 分布）</li>
+</ul>
+<h3 id="5.2-MDP-MRP（关键退化）">5.2 MDP <span class="math math-inline">$+$</span> <span class="math math-inline">$\pi$</span> <span class="math math-inline">$=$</span> MRP（关键退化）</h3>
+<p>给定策略后，把 <span class="math math-inline">$a$</span> 用 <span class="math math-inline">$\pi(a\mid s)$</span> 边缘化掉，转移和奖励就只跟 <span class="math math-inline">$s$</span> 有关：</p>
+<div class="math math-block">
+$$
+P_\pi(s'\mid s) = \sum_{a\in A}\pi(a\mid s)\,p(s'\mid s,a)
+$$
+</div>
+<div class="math math-block">
+$$
+r_\pi(s) = \sum_{a\in A}\pi(a\mid s)\,R(s,a)
+$$
+</div>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">一句话总结</span></div>
+  <div class="callout-body"><p>这个退化让我们可以<strong>复用 MRP 的所有结论</strong>——策略评估的时候直接套贝尔曼方程；只有在&quot;控制&quot;问题（搜索最优 <span class="math math-inline">$\pi$</span>）里，动作维度才真正活起来。</p>
+</div>
+</div>
+<hr />
+<h2 id="6.-MDP-的两类价值函数">6. MDP 的两类价值函数</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>状态价值 <span class="math math-inline">$V_\pi(s)$</span></th>
+<th>动作价值 <span class="math math-inline">$Q_\pi(s,a)$</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>定义</td>
+<td><span class="math math-inline">$\mathbb E_\pi[G_t\mid s_t=s]$</span></td>
+<td><span class="math math-inline">$\mathbb E_\pi[G_t\mid s_t=s, a_t=a]$</span></td>
+</tr>
+<tr>
+<td>直觉</td>
+<td>&quot;处于 <span class="math math-inline">$s$</span>、按 <span class="math math-inline">$\pi$</span> 走，未来值多少&quot;</td>
+<td>&quot;在 <span class="math math-inline">$s$</span> 强制做 <span class="math math-inline">$a$</span> 一次，再按 <span class="math math-inline">$\pi$</span> 走，未来值多少&quot;</td>
+</tr>
+<tr>
+<td>维度</td>
+<td><span class="math math-inline">$|S|$</span></td>
+<td><span class="math math-inline">$|S|\cdot|A|$</span>（Q 表）</td>
+</tr>
+<tr>
+<td>用途</td>
+<td>评估、比较状态好坏</td>
+<td>直接读出&quot;该选哪个动作&quot;——是控制问题的主角</td>
+</tr>
+</tbody>
+</table>
+<p><strong>互相转换</strong>（铁律，背下来）：</p>
+<div class="math math-block">
+$$
+\boxed{\;V_\pi(s) = \sum_{a\in A}\pi(a\mid s)\,Q_\pi(s,a)\;}\tag{2.8}
+$$
+</div>
+<div class="math math-block">
+$$
+\boxed{\;Q_\pi(s,a) = R(s,a) + \gamma\sum_{s'\in S} p(s'\mid s,a)\,V_\pi(s')\;}\tag{2.9}
+$$
+</div>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">V 和 Q 谁更基础？</span></div>
+  <div class="callout-body"><p>从信息量看 <strong>Q ≥ V</strong>（Q 多了动作维度，能直接做决策）；从存储看 V 更省（少一维）。<strong>有 Q 一定能反推 V</strong>（式 2.8 加权求和），<strong>有 V 不能直接得到 <span class="math math-inline">$\pi^*$</span></strong>（你不知道选哪个动作能达到 <span class="math math-inline">$V^*$</span>，除非还知道 <span class="math math-inline">$p,R$</span> 才能算 <span class="math math-inline">$Q^*=R+\gamma P V^*$</span>）。所以无模型控制几乎都学 <span class="math math-inline">$Q$</span>（DQN / Sarsa / Q-learning）。</p>
+</div>
+</div>
+<hr />
+<h2 id="7.-贝尔曼期望方程">7. 贝尔曼期望方程</h2>
+<p>把 <span class="math math-inline">$G_t$</span> 拆成&quot;即时奖励 + 折扣后续&quot;的递归形式：</p>
+<div class="math math-block">
+$$
+\boxed{\;V_\pi(s) = \mathbb E_\pi[r_{t+1} + \gamma V_\pi(s_{t+1})\mid s_t=s]\;}\tag{2.6}
+$$
+</div>
+<div class="math math-block">
+$$
+\boxed{\;Q_\pi(s,a) = \mathbb E_\pi[r_{t+1} + \gamma Q_\pi(s_{t+1}, a_{t+1})\mid s_t=s, a_t=a]\;}\tag{2.7}
+$$
+</div>
+<p>把 (2.8)(2.9) 互相代入，展开成&quot;纯 <span class="math math-inline">$V$</span>&quot;和&quot;纯 <span class="math math-inline">$Q$</span>&quot;两个版本：</p>
+<p><strong>纯 <span class="math math-inline">$V$</span> 版（最常用的一行）</strong>：</p>
+<div class="math math-block">
+$$
+\boxed{\;V_\pi(s) = \sum_{a\in A}\pi(a\mid s)\!\left[R(s,a) + \gamma\sum_{s'\in S}p(s'\mid s,a)\,V_\pi(s')\right]\;}\tag{2.10}
+$$
+</div>
+<p><strong>纯 <span class="math math-inline">$Q$</span> 版</strong>：</p>
+<div class="math math-block">
+$$
+\boxed{\;Q_\pi(s,a) = R(s,a) + \gamma\sum_{s'\in S}p(s'\mid s,a)\sum_{a'\in A}\pi(a'\mid s')\,Q_\pi(s',a')\;}\tag{2.11}
+$$
+</div>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">怎么读这两个式子</span></div>
+  <div class="callout-body"><p>式 (2.10) 是两层求和：<strong>外层对动作 <span class="math math-inline">$a$</span> 用 <span class="math math-inline">$\pi$</span> 加权</strong>（选谁），<strong>内层对下个状态 <span class="math math-inline">$s'$</span> 用 <span class="math math-inline">$p$</span> 加权</strong>（环境会送你去哪）。这正是下一节&quot;备份图&quot;的两层结构。</p>
+</div>
+</div>
+<hr />
+<h2 id="8.-备份图（backup-diagram）">8. 备份图（backup diagram）</h2>
+<p><strong>备份</strong>：把后继节点的价值信息&quot;反向传播&quot;到当前节点；这是所有自举类算法的核心动作。</p>
+<ul>
+<li>空心圆 <span class="math math-inline">$\bigcirc$</span>：状态节点</li>
+<li>实心圆 <span class="math math-inline">$\bullet$</span>：状态-动作对节点</li>
+</ul>
+<h3 id="的备份图"><span class="math math-inline">$V_\pi$</span> 的备份图</h3>
+<pre><code class="language-dot">digraph V_backup {
+  rankdir=TB;
+  node [fontname=&quot;Helvetica&quot;];
+  edge [fontname=&quot;Helvetica&quot;, fontsize=10];
+
+  s [label=&quot;s&quot;, shape=circle, style=&quot;filled&quot;, fillcolor=&quot;#f0f4ff&quot;, width=0.5];
+
+  sa1 [label=&quot;(s, a₁)&quot;, shape=circle, style=&quot;filled&quot;, fillcolor=&quot;#000000&quot;, fontcolor=&quot;white&quot;, width=0.55];
+  sa2 [label=&quot;(s, a₂)&quot;, shape=circle, style=&quot;filled&quot;, fillcolor=&quot;#000000&quot;, fontcolor=&quot;white&quot;, width=0.55];
+
+  s1 [label=&quot;s&#x27;₁&quot;, shape=circle, style=&quot;filled&quot;, fillcolor=&quot;#f0f4ff&quot;, width=0.45];
+  s2 [label=&quot;s&#x27;₂&quot;, shape=circle, style=&quot;filled&quot;, fillcolor=&quot;#f0f4ff&quot;, width=0.45];
+  s3 [label=&quot;s&#x27;₃&quot;, shape=circle, style=&quot;filled&quot;, fillcolor=&quot;#f0f4ff&quot;, width=0.45];
+  s4 [label=&quot;s&#x27;₄&quot;, shape=circle, style=&quot;filled&quot;, fillcolor=&quot;#f0f4ff&quot;, width=0.45];
+
+  s -&gt; sa1 [label=&quot;π(a₁|s)&quot;];
+  s -&gt; sa2 [label=&quot;π(a₂|s)&quot;];
+  sa1 -&gt; s1 [label=&quot;p(s&#x27;₁|s,a₁)&quot;];
+  sa1 -&gt; s2 [label=&quot;p(s&#x27;₂|s,a₁)&quot;];
+  sa2 -&gt; s3 [label=&quot;p(s&#x27;₃|s,a₂)&quot;];
+  sa2 -&gt; s4 [label=&quot;p(s&#x27;₄|s,a₂)&quot;];
+}
+</code></pre>
+<p><strong>读法</strong>：从叶子（下一状态 <span class="math math-inline">$V_\pi(s')$</span>）往上备份 → 经过黑节点（拿到即时奖励 + 折扣未来）→ 再按 <span class="math math-inline">$\pi$</span> 加权回到根节点 <span class="math math-inline">$V_\pi(s)$</span>。</p>
+<div class="math math-block">
+$$
+V_\pi(s) = \sum_a \pi(a\mid s)\Big[R(s,a) + \gamma\sum_{s'} p(s'\mid s,a)\,V_\pi(s')\Big]\tag{2.12}
+$$
+</div>
+<hr />
+<h2 id="9.-策略评估（Policy-Evaluation）">9. 策略评估（Policy Evaluation）</h2>
+<blockquote>
+<p>给定 MDP 和 <span class="math math-inline">$\pi$</span>，算出 <span class="math math-inline">$V_\pi$</span>。也叫<strong>预测问题（prediction）</strong>。</p>
+</blockquote>
+<p>把贝尔曼期望方程当成<strong>迭代更新</strong>：</p>
+<div class="math math-block">
+$$
+\boxed{\;V^{t+1}(s) = \sum_{a\in A}\pi(a\mid s)\!\left[R(s,a)+\gamma\sum_{s'\in S}p(s'\mid s,a)\,V^{t}(s')\right]\;}\tag{2.18}
+$$
+</div>
+<p>或等价的 MRP 简化形式（吸收了 <span class="math math-inline">$\pi$</span> 之后）：</p>
+<div class="math math-block">
+$$
+V^{t+1}(s) = r_\pi(s) + \gamma\sum_{s'} P_\pi(s'\mid s)\,V^{t}(s')\tag{2.19}
+$$
+</div>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">策略评估算法（同步备份）</span></div>
+  <div class="callout-body"><pre><code>输入: MDP &lt;S,A,P,R,γ&gt;, 策略 π, 阈值 ε
+初始化: V(s) = 0  ∀s
+repeat:
+    Δ = 0
+    for each s in S:
+        v_old = V(s)
+        V(s) = Σ_a π(a|s) [R(s,a) + γ Σ_s&#x27; p(s&#x27;|s,a) V(s&#x27;)]
+        Δ = max(Δ, |v_old - V(s)|)
+until Δ &lt; ε
+输出: V_π
+</code></pre>
+</div>
+</div>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">同步 vs 异步备份</span></div>
+  <div class="callout-body"><p><strong>同步</strong>：每轮全量扫描所有状态，老 <span class="math math-inline">$V$</span> 算新 <span class="math math-inline">$V$</span>（用两份内存）；<strong>异步</strong>：原地更新，谁先算谁用新值。异步收敛通常更快，因为价值能&quot;传播&quot;得更远（如 Gauss-Seidel 思想）。</p>
+</div>
+</div>
+<hr />
+<h2 id="10.-最优价值与最优策略">10. 最优价值与最优策略</h2>
+<p>定义：</p>
+<div class="math math-block">
+$$
+V^*(s) = \max_\pi V_\pi(s),\qquad \pi^*(s) = \arg\max_\pi V_\pi(s)
+$$
+</div>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text"><span class="math math-inline">$V^*$</span> 唯一，<span class="math math-inline">$\pi^*$</span> 不一定唯一</span></div>
+  <div class="callout-body"><p>一个 MDP 的最优值函数是<strong>唯一</strong>的——它由 MDP 本身完全决定（贝尔曼最优算子在 <span class="math math-inline">$\gamma<1$</span> 时是 <span class="math math-inline">$\gamma$</span>-压缩映射，Banach 不动点定理保证唯一不动点 <span class="math math-inline">$V^*$</span>）。但能达到这个最优值的策略<strong>可能多个</strong>：若在某状态 <span class="math math-inline">$s$</span> 下有两个动作 <span class="math math-inline">$a_1, a_2$</span> 满足 <span class="math math-inline">$Q^*(s,a_1)=Q^*(s,a_2)=\max$</span>，那么任意混合都是最优策略。&quot;有限 MDP 一定存在<strong>确定性平稳</strong>最优策略&quot;是 Howard / Puterman 的经典结果——所以只看 <span class="math math-inline">$\arg\max_a Q^*(s,a)$</span> 不会损失任何最优性。</p>
+</div>
+</div>
+<h3 id="从-提取">从 <span class="math math-inline">$Q^*$</span> 提取 <span class="math math-inline">$\pi^*$</span></h3>
+<div class="math math-block">
+$$
+\pi^*(a\mid s) = \begin{cases} 1, & a=\arg\max_{a'\in A} Q^*(s,a')\\ 0, & \text{其他}\end{cases}
+$$
+</div>
+<h3 id="贝尔曼最优方程">贝尔曼最优方程</h3>
+<p>把 (2.8) 的&quot;对 <span class="math math-inline">$a$</span> 按 <span class="math math-inline">$\pi$</span> 加权&quot;换成&quot;对 <span class="math math-inline">$a$</span> 取 <span class="math math-inline">$\max$</span>&quot;——这是从&quot;评估&quot;到&quot;控制&quot;的灵魂改动：</p>
+<div class="math math-block">
+$$
+\boxed{\;V^*(s) = \max_{a\in A} Q^*(s,a)\;}\tag{2.20}
+$$
+</div>
+<div class="math math-block">
+$$
+\boxed{\;Q^*(s,a) = R(s,a) + \gamma\sum_{s'\in S} p(s'\mid s,a)\,V^*(s')\;}\tag{2.21}
+$$
+</div>
+<p>互相代入得到两个&quot;纯版本&quot;：</p>
+<div class="math math-block">
+$$
+\boxed{\;V^*(s) = \max_{a}\Big(R(s,a) + \gamma\sum_{s'} p(s'\mid s,a)\,V^*(s')\Big)\;}
+$$
+</div>
+<div class="math math-block">
+$$
+\boxed{\;Q^*(s,a) = R(s,a) + \gamma\sum_{s'} p(s'\mid s,a)\max_{a'} Q^*(s',a')\;}\tag{Q-learning 的根}
+$$
+</div>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text"><span class="math math-inline">$\sum_a\pi(a\mid s)$</span> vs <span class="math math-inline">$\max_a$</span> 的对照</span></div>
+  <div class="callout-body"><p>期望方程对动作做<strong>加权平均</strong>——评估&quot;任意给定策略&quot;； 最优方程对动作做 <strong><span class="math math-inline">$\max$</span></strong>——表达&quot;如果我能自由选择动作能多好&quot;。把它们混淆会写出根本不存在的方程。<span class="math math-inline">$\max$</span> 让方程是<strong>分段线性</strong>（不再是线性算子），所以<strong>没有像 MRP 那样一次性矩阵求逆</strong>的闭式解——必须先知道每个状态的最优动作才能化为线性方程。这正是策略迭代&quot;评估—改进&quot;循环存在的根本原因。</p>
+</div>
+</div>
+<hr />
+<h2 id="11.-控制问题（一）：策略迭代">11. 控制问题（一）：策略迭代</h2>
+<p><strong>两步循环</strong>：</p>
+<ol>
+<li><strong>策略评估（Evaluation）</strong>：当前 <span class="math math-inline">$\pi_i$</span> 固定，迭代式 (2.18) 算到 <span class="math math-inline">$V_{\pi_i}$</span> 收敛</li>
+<li><strong>策略改进（Improvement）</strong>：贪心地从 <span class="math math-inline">$Q_{\pi_i}$</span> 提取新策略</li>
+</ol>
+<div class="math math-block">
+$$
+\pi_{i+1}(s) = \arg\max_{a} Q_{\pi_i}(s,a),\quad Q_{\pi_i}(s,a)=R(s,a)+\gamma\sum_{s'} p(s'\mid s,a) V_{\pi_i}(s')
+$$
+</div>
+<h3 id="策略改进定理（policy-improvement-theorem）">策略改进定理（policy improvement theorem）</h3>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">单调改进保证</span></div>
+  <div class="callout-body"><p>若新策略 <span class="math math-inline">$\pi'$</span> 在<strong>每个状态</strong>都按 <span class="math math-inline">$\pi'(s)=\arg\max_a Q_\pi(s,a)$</span> 取动作，则对所有 <span class="math math-inline">$s$</span> 有
+<span class="math math-inline">$Q_\pi(s,\pi'(s)) = \max_a Q_\pi(s,a) \ge Q_\pi(s,\pi(s)) = V_\pi(s)$</span>
+反复推开后继状态可得 <span class="math math-inline">$V_{\pi'}(s)\ge V_\pi(s)$</span>，即 <strong><span class="math math-inline">$\pi'$</span> 在每个状态都不差于 <span class="math math-inline">$\pi$</span></strong>。注意是<strong>非严格 ≥</strong>：达到最优时所有状态都取等（此时新策略=旧策略=最优），这正是&quot;何时停止改进&quot;的判据。</p>
+<p><strong>何时停止改进</strong>：当 <span class="math math-inline">$\max_a Q_\pi(s,a)=Q_\pi(s,\pi(s))=V_\pi(s)$</span> 对所有 <span class="math math-inline">$s$</span> 成立——这正是<strong>贝尔曼最优方程</strong>！收敛点就是 <span class="math math-inline">$\pi^*$</span>。</p>
+</div>
+</div>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">策略迭代伪代码</span></div>
+  <div class="callout-body"><pre><code>初始化: V(s) = 0, π(s) 任意
+repeat:
+    # ---- Policy Evaluation ----
+    repeat:
+        for each s:
+            V(s) = Σ_a π(a|s) [R(s,a) + γ Σ_s&#x27; p(s&#x27;|s,a) V(s&#x27;)]
+    until ΔV &lt; ε
+    # ---- Policy Improvement ----
+    policy_stable = True
+    for each s:
+        a_old = π(s)
+        π(s) = argmax_a [R(s,a) + γ Σ_s&#x27; p(s&#x27;|s,a) V(s&#x27;)]
+        if a_old != π(s): policy_stable = False
+until policy_stable
+输出: π*, V*
+</code></pre>
+</div>
+</div>
+<hr />
+<h2 id="12.-控制问题（二）：价值迭代">12. 控制问题（二）：价值迭代</h2>
+<p><strong>最优性原理（principle of optimality）</strong>：<span class="math math-inline">$\pi$</span> 在 <span class="math math-inline">$s$</span> 达到最优 <span class="math math-inline">$\Leftrightarrow$</span> 对所有 <span class="math math-inline">$s$</span> 能到达的后继 <span class="math math-inline">$s'$</span>，<span class="math math-inline">$\pi$</span> 也都在 <span class="math math-inline">$s'$</span> 达到最优。</p>
+<p>→ 子问题最优 <span class="math math-inline">$V^*(s')$</span> 已知 → 直接套贝尔曼最优方程算出 <span class="math math-inline">$V^*(s)$</span>。这就是把最优方程当<strong>更新规则</strong>：</p>
+<div class="math math-block">
+$$
+\boxed{\;V(s) \leftarrow \max_{a}\Big(R(s,a) + \gamma\sum_{s'} p(s'\mid s,a)\,V(s')\Big)\;}\tag{2.22}
+$$
+</div>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">价值迭代伪代码</span></div>
+  <div class="callout-body"><pre><code>初始化: V_0(s) = 0  ∀s
+for k = 1 to H:
+    for each s:
+        Q_k(s, a) = R(s,a) + γ Σ_s&#x27; p(s&#x27;|s,a) V_{k-1}(s&#x27;)
+        V_k(s)    = max_a Q_k(s, a)
+提取策略:
+    π*(s) = argmax_a [R(s,a) + γ Σ_s&#x27; p(s&#x27;|s,a) V_H(s&#x27;)]
+输出: π*, V*
+</code></pre>
+</div>
+</div>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">直觉：价值的反向传播</span></div>
+  <div class="callout-body"><p>价值迭代每轮只让信息&quot;传一格&quot;——离终点 <span class="math math-inline">$k$</span> 步的状态，要经过 <span class="math math-inline">$k$</span> 次迭代才能拿到&quot;终点的味道&quot;。所以<strong>未收敛时中间策略没意义</strong>——它只是半成品，不能拿去用。</p>
+</div>
+</div>
+<hr />
+<h2 id="13.-策略迭代-vs-价值迭代-对比">13. 策略迭代 vs 价值迭代 对比</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>策略迭代 PI</th>
+<th>价值迭代 VI</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>用哪个方程</td>
+<td><strong>贝尔曼期望方程</strong>（评估时） + 贪心改进</td>
+<td><strong>贝尔曼最优方程</strong>直接当更新</td>
+</tr>
+<tr>
+<td>内层循环</td>
+<td>评估要跑到 <span class="math math-inline">$V_{\pi_i}$</span> 收敛（多次）</td>
+<td>没有内层；每轮只更新一次 <span class="math math-inline">$V$</span></td>
+</tr>
+<tr>
+<td>每轮代价</td>
+<td>高（一次评估 = 多步 DP）</td>
+<td>低（一次 <span class="math math-inline">$\max$</span>）</td>
+</tr>
+<tr>
+<td>收敛轮数</td>
+<td><strong>少</strong>（策略空间有限，往往很快）</td>
+<td><strong>多</strong>（要传播到所有状态）</td>
+</tr>
+<tr>
+<td>中间产物意义</td>
+<td>每轮的 <span class="math math-inline">$\pi_i$</span> 是<strong>完整且单调改进</strong>的策略</td>
+<td>未收敛的 <span class="math math-inline">$V_k$</span> 没有对应的有意义策略</td>
+</tr>
+<tr>
+<td>适用场景</td>
+<td>策略易表示、评估可重用</td>
+<td>状态规模大、想最简循环</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">二者其实是同一族</span></div>
+  <div class="callout-body"><p>PI 把&quot;评估&quot;做到极致（精确 <span class="math math-inline">$V_\pi$</span>）再改进；VI 把评估只做 <strong>1 步</strong> 就改进——介于两者之间的 <strong>modified policy iteration</strong> 做 <span class="math math-inline">$k$</span> 步评估再改进。三者都属于&quot;<strong>广义策略迭代（Generalized Policy Iteration, GPI）</strong>&quot;——评估和改进两个轮子的相互拉扯，这是后续几乎所有 RL 算法（Sarsa / Q-learning / Actor-Critic）的共同骨架。</p>
+</div>
+</div>
+<hr />
+<h2 id="14.-预测-vs-控制：方法对照总表">14. 预测 vs 控制：方法对照总表</h2>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>输入</th>
+<th>输出</th>
+<th>用到的贝尔曼方程</th>
+<th>算法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>预测</strong>（评估）</td>
+<td><span class="math math-inline">$\langle S,A,P,R,\gamma\rangle$</span> + <span class="math math-inline">$\pi$</span></td>
+<td><span class="math math-inline">$V_\pi$</span></td>
+<td>期望方程（迭代）</td>
+<td>策略评估</td>
+</tr>
+<tr>
+<td><strong>控制</strong></td>
+<td><span class="math math-inline">$\langle S,A,P,R,\gamma\rangle$</span></td>
+<td><span class="math math-inline">$V^*, \pi^*$</span></td>
+<td><strong>评估用期望方程 + 改进用最优方程（贪心一步）</strong></td>
+<td>策略迭代</td>
+</tr>
+<tr>
+<td><strong>控制</strong></td>
+<td><span class="math math-inline">$\langle S,A,P,R,\gamma\rangle$</span></td>
+<td><span class="math math-inline">$V^*, \pi^*$</span></td>
+<td><strong>最优方程当迭代规则</strong></td>
+<td>价值迭代</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">为什么本章只讲 DP 而不讲 MC/TD</span></div>
+  <div class="callout-body"><p>本章解的是<strong>规划（planning）问题</strong>——环境模型 <span class="math math-inline">$p,R$</span> 已知。下一章 Q-learning / Sarsa 才解<strong>学习（learning）问题</strong>——只能与环境交互、采样轨迹，必须放弃 <span class="math math-inline">$\sum_{s'} p(s'\mid s,a)$</span> 这种&quot;全枚举&quot;操作，改用样本期望来代替。</p>
+</div>
+</div>
+<hr />
+<h2 id="15.-Cheat-Sheet">15. Cheat Sheet</h2>
+<h3 id="15.1-三句话总结">15.1 三句话总结</h3>
+<ol>
+<li><strong>MDP 五元组</strong> <span class="math math-inline">$\langle S,A,P,R,\gamma\rangle$</span> + 策略 <span class="math math-inline">$\pi$</span>。</li>
+<li><strong>贝尔曼方程是灵魂</strong>：期望版用 <span class="math math-inline">$\sum_a\pi$</span>（评估），最优版用 <span class="math math-inline">$\max_a$</span>（控制）。</li>
+<li><strong>求解两条路</strong>：策略迭代 = 评估 + 改进双循环；价值迭代 = 直接迭代最优方程，最后提策略。</li>
+</ol>
+<h3 id="15.2-最小可跑伪代码（NumPy-风格）">15.2 最小可跑伪代码（NumPy 风格）</h3>
+<pre><code class="language-python">import numpy as np
+
+# 约定（与 §3-§4 的 MRP 矩阵形式 V = R + γ P V 不同！）：
+#   P shape = [S, A, S&#x27;]    状态转移张量
+#   R shape = [S, A]        即 R(s,a)，MDP 完整版
+#   pi shape = [S, A]       策略 π(a|s)
+# np.einsum 每个字符是单独的下标——必须用单字符（如 t 代表 s&#x27;）
+# 终止状态需调用方保证 V[terminal]=0，下面代码未显式处理
+
+def policy_evaluation(P, R, pi, gamma=0.9, eps=1e-6):
+    &quot;&quot;&quot;P[s, a, t], R[s, a], pi[s, a] -&gt; V[s]&quot;&quot;&quot;
+    nS = P.shape[0]
+    V = np.zeros(nS)
+    while True:
+        # 用 pi 把 (s,a,t) 边缘化掉 a -&gt; (s, t)
+        P_pi = np.einsum(&#x27;sa,sat-&gt;st&#x27;, pi, P)   # [S, S]
+        R_pi = np.einsum(&#x27;sa,sa-&gt;s&#x27;, pi, R)     # [S]
+        V_new = R_pi + gamma * P_pi @ V
+        if np.max(np.abs(V_new - V)) &lt; eps:
+            return V_new
+        V = V_new
+
+def value_iteration(P, R, gamma=0.9, eps=1e-6):
+    nS, nA = R.shape
+    V = np.zeros(nS)
+    while True:
+        Q = R + gamma * np.einsum(&#x27;sat,t-&gt;sa&#x27;, P, V)   # [S, A]
+        V_new = Q.max(axis=1)
+        if np.max(np.abs(V_new - V)) &lt; eps:
+            pi_star = np.eye(nA)[Q.argmax(axis=1)]      # 确定性策略 one-hot
+            return V_new, pi_star
+        V = V_new
+
+def policy_iteration(P, R, gamma=0.9):
+    nS, nA = R.shape
+    pi = np.ones((nS, nA)) / nA                         # 均匀初始化
+    while True:
+        V = policy_evaluation(P, R, pi, gamma)
+        Q = R + gamma * np.einsum(&#x27;sat,t-&gt;sa&#x27;, P, V)
+        pi_new = np.eye(nA)[Q.argmax(axis=1)]
+        if np.allclose(pi, pi_new):
+            return V, pi_new
+        pi = pi_new
+</code></pre>
+<div class="callout callout-summary" style="border-left-color:#64748b; background:#64748b14;">
+  <div class="callout-title"><span class="callout-icon">📌</span><span class="callout-title-text">常见坑（debug 必查）</span></div>
+  <div class="callout-body"><ul>
+<li><strong><span class="math math-inline">$\gamma=1$</span> 且无终止状态</strong> → <span class="math math-inline">$G_t$</span> 发散，价值迭代不收敛。务必保证有吸收态或 <span class="math math-inline">$\gamma<1$</span>。</li>
+<li><strong>终止状态的价值必须显式设为 0</strong>——很多 bug 来自&quot;忘了把吸收态从更新里剔除&quot;。</li>
+<li><strong>收敛阈值 <span class="math math-inline">$\varepsilon$</span></strong>：相对量级要看 <span class="math math-inline">$R/(1-\gamma)$</span> 的尺度，机械地取 <span class="math math-inline">$10^{-6}$</span> 在大奖励问题上其实很松。</li>
+<li><strong>奖励下标错位</strong>：本教程 §3.1 公式用 Sutton 风格 <span class="math math-inline">$G_t=r_{t+1}+\gamma r_{t+2}+\cdots$</span>（&quot;做完 <span class="math math-inline">$a_t$</span> 拿到 <span class="math math-inline">$r_{t+1}$</span>&quot;），但 §3.3 的 <span class="math math-inline">$s_4\to s_5\to\cdots$</span> 数值例子是按&quot;起步奖励 = <span class="math math-inline">$R(s_t)$</span>&quot;算的（<span class="math math-inline">$G=R(s_4)+\gamma R(s_5)+\cdots$</span>），两套约定差一个 <span class="math math-inline">$\gamma$</span> 因子——例子保留原文结果便于对照，<strong>自写代码请固定一套</strong>别两套混着用。</li>
+<li><strong><code>np.einsum</code> 维度索引</strong>：每个字符是单独的下标，多字符（如 <code>s1</code>）会被解析成两个独立下标——必须用单字符（教程改用 <code>t</code> 表示 <span class="math math-inline">$s'$</span>）。维度搞错会得到诡异的负价值。</li>
+<li><strong>行/列约定</strong>：<span class="math math-inline">$\boldsymbol P_{ij}=p(s_j\mid s_i)$</span> 还是 <span class="math math-inline">$p(s_i\mid s_j)$</span>？写错会 <span class="math math-inline">$\boldsymbol V$</span> 反着收敛。</li>
+<li><strong>策略迭代的&quot;评估收敛到多严&quot;</strong>：根本不需要 <span class="math math-inline">$\varepsilon=10^{-9}$</span>，跑几步就改进，这正是 modified PI / 价值迭代的优势。</li>
+<li><strong><code>np.einsum</code> 维度索引</strong>：上面 <code>P[s,a,t]</code> 约定下，<code>'sat,t-&gt;sa'</code> 表示对 <span class="math math-inline">$s'$</span> 求和——务必用<strong>单字符</strong>下标，写成 <code>'sas1,s1-&gt;sa'</code> 会被 einsum 解析成多个独立下标而出错。</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="16.-一图总览">16. 一图总览</h2>
+<pre><code class="language-dot">digraph MDP_overview {
+  rankdir=TB; node [shape=box, style=&quot;rounded,filled&quot;, fontname=&quot;Helvetica&quot;];
+  edge [fontname=&quot;Helvetica&quot;];
+
+  // 起点：基础概念
+  MP   [label=&quot;马尔可夫过程 MP\n⟨S, P⟩\n(纯随机流动)&quot;,        fillcolor=&quot;#f0f4ff&quot;];
+  MRP  [label=&quot;马尔可夫奖励过程 MRP\n⟨S, P, R, γ⟩\n回报 G_t / 价值 V(s)&quot;, fillcolor=&quot;#f0f4ff&quot;];
+  MDP  [label=&quot;马尔可夫决策过程 MDP\n⟨S, A, P, R, γ⟩\n策略 π / V_π / Q_π&quot;, fillcolor=&quot;#f0f4ff&quot;];
+
+  // 关键工具
+  BE      [label=&quot;贝尔曼期望方程\nV_π = R + γ Σ p V_π&quot;, fillcolor=&quot;#fff4d6&quot;];
+  BO      [label=&quot;贝尔曼最优方程\nV* = max_a (R + γ Σ p V*)&quot;, fillcolor=&quot;#fff4d6&quot;];
+  BACKUP  [label=&quot;备份图 / Bootstrap\n用 V(s&#x27;) 更新 V(s)&quot;, fillcolor=&quot;#fff4d6&quot;];
+
+  // 两类问题
+  PRED  [label=&quot;预测 Prediction\n给定 π, 求 V_π&quot;];
+  CTRL  [label=&quot;控制 Control\n求 V*, π*&quot;];
+
+  // 算法
+  EVAL  [label=&quot;策略评估\nV ← Σπ[R+γΣpV]&quot;];
+  PI    [label=&quot;策略迭代 PI\n评估 + 贪心改进\n(评估用期望方程)&quot;, fillcolor=&quot;#d6ffd6&quot;];
+  VI    [label=&quot;价值迭代 VI\n直接迭代最优方程\n(只更新 1 步)&quot;, fillcolor=&quot;#d6ffd6&quot;];
+
+  PISTAR [label=&quot;最优策略 π*\n+ 最优价值 V*&quot;, fillcolor=&quot;#ffd6d6&quot;];
+
+  // 后续算法（下一章）
+  NEXT  [label=&quot;无模型方法 (Ch3)\nMC / TD / Sarsa / Q-learning\n→ 不再需要 p,R 已知&quot;, fillcolor=&quot;#e0e0e0&quot;];
+
+  MP -&gt; MRP -&gt; MDP;
+  MRP -&gt; BE [style=dashed, label=&quot;对 V 递归&quot;];
+  MDP -&gt; BE;
+  BE  -&gt; BACKUP;
+  BO  -&gt; BACKUP;
+  MDP -&gt; BO [label=&quot;加 max_a&quot;];
+
+  MDP -&gt; PRED;
+  MDP -&gt; CTRL;
+  PRED -&gt; EVAL -&gt; BE [style=dotted];
+  CTRL -&gt; PI;
+  CTRL -&gt; VI;
+  PI -&gt; BE [style=dotted];
+  VI -&gt; BO [style=dotted];
+  PI -&gt; PISTAR;
+  VI -&gt; PISTAR;
+
+  PISTAR -&gt; NEXT [style=dashed, label=&quot;抛弃模型已知假设&quot;];
+}
+</code></pre>
+<p><strong>配色约定</strong>：浅蓝=基础对象 / 浅黄=数学工具 / 浅绿=核心算法 / 浅红=最终目标 / 灰=下一章。</p>
+<hr />
+<h2 id="17.-关联笔记">17. 关联笔记</h2>
+<ul>
+<li><span class="wikilink" data-target="表格型方法教程" title="表格型方法教程">表格型方法</span>：本章 MDP 离散版本的具体求解——Sarsa / Q-learning 是表格版的免模型 TD 控制</li>
+<li><span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span>：把表格 Q-learning 扩展到函数逼近——MDP 最优方程的深度学习实现</li>
+<li><span class="wikilink" data-target="Q-learning" title="Q-learning">Q-learning</span>：把贝尔曼最优方程的 <span class="math math-inline">$Q^*$</span> 版本变成无模型 TD 更新——本章最优方程的直接继承者</li>
+<li><span class="wikilink" data-target="Sarsa" title="Sarsa">Sarsa</span>：把贝尔曼期望方程变成 on-policy TD 更新——本章期望方程的直接继承者</li>
+<li><span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span>：完全绕开 <span class="math math-inline">$V/Q$</span>，直接对 <span class="math math-inline">$\pi_\theta$</span> 求梯度——与本章&quot;先评估再贪心&quot;的间接路线相反</li>
+<li><span class="wikilink" data-target="Actor-Critic教程" title="Actor-Critic教程">Actor-Critic</span>：Critic 走本章贝尔曼路线评估 <span class="math math-inline">$V/Q$</span>，Actor 走策略梯度路线——两条路的合流</li>
+<li><span class="wikilink" data-target="POMDP" title="POMDP">POMDP</span>：本章假设全可观测；状态不可观测时退化为 POMDP（部分可观测 MDP），用置信状态 belief state 重新满足马尔可夫性</li>
+<li><span class="wikilink" data-target="动态规划" title="动态规划">动态规划</span>：本章所有算法都是 DP 在 MDP 上的具体化（最优子结构 + 重叠子问题）</li>
+<li>原文：<a href="https://datawhalechina.github.io/easy-rl/#/chapter2/chapter2" target="_blank" rel="noopener noreferrer">Easy-RL 第 2 章 马尔可夫决策过程</a></li>
+</ul>
+
+</main>
+</body>
+</html>

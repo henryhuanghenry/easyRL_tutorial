@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Obsidian workspace
+.obsidian/workspace*
+.obsidian/cache
+
+# 临时文件（reviewer 报告等）
+.tmp/
+
+# PDF 产物（38M，由 html 通过 Chrome headless 生成）
+pdf_export/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.uv/

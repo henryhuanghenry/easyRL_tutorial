@@ -1,0 +1,776 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>演员-评论员（Actor-Critic）高密度教程</title>
+  <link rel="stylesheet" href="_assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3/lib/viz-standalone.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async function () {
+      // 1. highlight.js — only on blocks that opted in via language-XXX class
+      try {
+        document.querySelectorAll('pre code').forEach(function (block) {
+          if (block.classList.contains('language-dot')) return;
+          if (block.classList.contains('language-mermaid')) return;
+          // Skip auto-detect on un-tagged blocks (e.g. ASCII diagrams) — hljs
+          // mis-classifies short text and recolours it badly.
+          var hasLang = false;
+          for (var i = 0; i < block.classList.length; i++) {
+            if (block.classList[i].indexOf('language-') === 0) { hasLang = true; break; }
+          }
+          if (!hasLang) return;
+          window.hljs && window.hljs.highlightElement(block);
+        });
+      } catch (e) { console.warn('hljs failed', e); }
+
+      // 2. Graphviz: replace <pre><code class="language-dot"> with rendered SVG
+      try {
+        if (window.Viz && typeof window.Viz.instance === 'function') {
+          const vizInstance = await window.Viz.instance();
+          document.querySelectorAll('pre code.language-dot').forEach(function (block) {
+            try {
+              const svg = vizInstance.renderSVGElement(block.textContent);
+              const wrapper = document.createElement('div');
+              wrapper.className = 'graphviz';
+              wrapper.appendChild(svg);
+              block.parentElement.replaceWith(wrapper);
+            } catch (err) {
+              console.error('viz render failed', err);
+              block.parentElement.classList.add('graphviz-error');
+            }
+          });
+        } else {
+          console.warn('viz-js not loaded');
+        }
+      } catch (e) { console.warn('viz init failed', e); }
+
+      // 3. Mermaid
+      try {
+        if (window.mermaid) {
+          window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+          await window.mermaid.run({ querySelector: 'pre.mermaid' });
+        }
+      } catch (e) { console.warn('mermaid failed', e); }
+
+      // 4. KaTeX last so it does not fight hljs/viz
+      try {
+        if (window.renderMathInElement) {
+          window.renderMathInElement(document.body, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$',  right: '$',  display: false }
+            ],
+            throwOnError: false,
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+          });
+        }
+      } catch (e) { console.warn('katex failed', e); }
+    });
+  </script>
+</head>
+<body>
+<header class="meta">
+  <h1 class="doc-title">演员-评论员（Actor-Critic）高密度教程</h1>
+  <div class="meta-row">
+    <span class="meta-tags"><span class="meta-tag">#强化学习</span><span class="meta-tag">#策略梯度</span><span class="meta-tag">#Actor-Critic</span><span class="meta-tag">#A2C</span><span class="meta-tag">#A3C</span><span class="meta-tag">#DDPG</span><span class="meta-tag">#RL</span></span>
+    <span class="meta-source">来源：<a href="https://datawhalechina.github.io/easy-rl/#/chapter9/chapter9">https://datawhalechina.github.io/easy-rl/#/chapter9/chapter9</a></span>
+    <span class="meta-date">2026-06-14</span>
+  </div>
+</header>
+
+<main class="doc">
+<h1 id="演员-评论员（Actor-Critic）">演员-评论员（Actor-Critic）</h1>
+<div class="callout callout-abstract" style="border-left-color:#7c3aed; background:#7c3aed14;">
+  <div class="callout-title"><span class="callout-icon">📋</span><span class="callout-title-text">一句话</span></div>
+  <div class="callout-body"><p><strong>Actor-Critic</strong> = <strong>策略梯度</strong>（actor 学策略 <span class="math math-inline">$\pi_\theta$</span>）+ <strong>时序差分自举</strong>（critic 学价值 <span class="math math-inline">$V_\phi$</span>/<span class="math math-inline">$Q_\phi$</span> 替代回报）。它把 <span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">REINFORCE</span> 中方差极大的随机回报 <span class="math math-inline">$G_t$</span> 换成&quot;价值网络估出的期望或 TD 残差&quot;，从而<strong>单步更新、低方差</strong>，是连接 <span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">PG</span> 和 <span class="wikilink" data-target="DQN教程" title="DQN教程">value-based</span> 两大流派的桥梁。</p>
+</div>
+</div>
+<hr />
+<h2 id="1.-背景：从-REINFORCE-出发的两个痛点">1. 背景：从 REINFORCE 出发的两个痛点</h2>
+<p>REINFORCE（<span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span>）的更新式：</p>
+<div class="math math-block">
+$$
+\nabla \bar R_\theta \approx \frac{1}{N}\sum_{n=1}^{N}\sum_{t=1}^{T_n}
+\Big(\underbrace{\sum_{t'=t}^{T_n}\gamma^{t'-t}r_{t'}^{n}}_{G_t^{n}}\;-\;b\Big)\,
+\nabla\log p_\theta(a_t^n\mid s_t^n)\tag{9.1}
+$$
+</div>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">REINFORCE 的两个致命问题</span></div>
+  <div class="callout-body"><ol>
+<li><strong>必须等回合结束</strong>：<span class="math math-inline">$G_t^n=\sum_{t'\ge t}\gamma^{t'-t}r_{t'}^n$</span> 要把后面所有奖励加起来才能算，不能单步更新；</li>
+<li><strong>方差大</strong>：<span class="math math-inline">$G_t$</span> 是把许多随机奖励加在一起的随机变量。即使同一 <span class="math math-inline">$(s,a)$</span>，因转移和后续策略采样的随机性，<span class="math math-inline">$G$</span> 的样本方差会随着 <span class="math math-inline">$T$</span> 几乎线性放大。少量采样下&quot;偶尔抽到 <span class="math math-inline">$+100$</span>、偶尔抽到 <span class="math math-inline">$-10$</span>&quot;，梯度信号噪声极大。</li>
+</ol>
+</div>
+</div>
+<h3 id="1.1-与同类方法横向对比">1.1 与同类方法横向对比</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>REINFORCE</th>
+<th>DQN</th>
+<th><strong>Actor-Critic</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>学什么</td>
+<td>仅 <span class="math math-inline">$\pi_\theta$</span></td>
+<td>仅 <span class="math math-inline">$Q_\phi$</span></td>
+<td><strong><span class="math math-inline">$\pi_\theta$</span> + <span class="math math-inline">$V_\phi$</span>（双头）</strong></td>
+</tr>
+<tr>
+<td>更新粒度</td>
+<td>回合结束</td>
+<td>单步 TD</td>
+<td><strong>单步 TD</strong></td>
+</tr>
+<tr>
+<td>advantage</td>
+<td><span class="math math-inline">$G_t-b$</span>（高方差 MC）</td>
+<td>通常无（Dueling DQN 例外）</td>
+<td><span class="math math-inline">$r_t+\gamma V(s_{t+1})-V(s_t)$</span>（低方差 TD）</td>
+</tr>
+<tr>
+<td>on/off-policy</td>
+<td>on</td>
+<td>off（replay 可复用）</td>
+<td><strong>on</strong>（A2C/A3C）</td>
+</tr>
+<tr>
+<td>探索</td>
+<td>采样自带</td>
+<td><span class="math math-inline">$\varepsilon$</span>-greedy</td>
+<td>采样自带 + entropy bonus</td>
+</tr>
+<tr>
+<td>动作空间</td>
+<td>离散/连续</td>
+<td>离散友好</td>
+<td>离散/连续</td>
+</tr>
+</tbody>
+</table>
+<h3 id="1.2-思路：用-Q-期望-/-V-自举-替代">1.2 思路：用 Q-期望 / V-自举 替代 <span class="math math-inline">$G_t$</span></h3>
+<p>REINFORCE 用 <strong>MC 单样本</strong> <span class="math math-inline">$G_t$</span> 近似 <span class="math math-inline">$\mathbb E[G_t]$</span>。如果我们直接训练一个网络去<strong>估 <span class="math math-inline">$G_t$</span> 的期望</strong>，就能用一个低方差的&quot;期望&quot;代替高方差的&quot;采样&quot; —— 这正是引入 critic 的根本动机。</p>
+<hr />
+<h2 id="2.-形式化：从-到-advantage">2. 形式化：从 <span class="math math-inline">$G_t$</span> 到 advantage</h2>
+<h3 id="2.1-关键身份">2.1 关键身份</h3>
+<p>随机回报 <span class="math math-inline">$G_t$</span> 在策略 <span class="math math-inline">$\pi_\theta$</span> 下的条件期望恰好是 Q 函数：</p>
+<div class="math math-block">
+$$
+\boxed{\;\mathbb E\!\left[G_t^n\;\big|\;s_t^n,a_t^n\right] \;=\; Q_{\pi_\theta}(s_t^n,a_t^n)\;}\tag{9.2}
+$$
+</div>
+<p>把 <span class="math math-inline">$G_t^n$</span> 替换成 <span class="math math-inline">$Q_{\pi_\theta}(s_t^n,a_t^n)$</span>，原 REINFORCE 中的&quot;采样估计&quot;就变成&quot;网络估计的期望&quot;，方差立刻降下来。</p>
+<h3 id="2.2-基线选-：得到-advantage">2.2 基线选 <span class="math math-inline">$V_\pi$</span>：得到 advantage</h3>
+<p><span class="math math-inline">$\sum_{t'\ge t}\gamma^{t'-t}r_{t'}^n - b$</span> 中减基线 <span class="math math-inline">$b$</span> 是为了让括号项<strong>有正有负</strong>（<span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span> §6 已证：减任意状态相关基线不改变期望，但能降方差）。最自然的基线是状态价值 <span class="math math-inline">$V_{\pi_\theta}(s_t^n)$</span> —— 因为根据全期望公式</p>
+<div class="math math-block">
+$$
+V_\pi(s) = \mathbb E_{a\sim\pi(\cdot|s)}[Q_\pi(s,a)]
+$$
+</div>
+<p>所以 <span class="math math-inline">$V_\pi(s)$</span> 恰是 <span class="math math-inline">$Q_\pi(s,a)$</span> 在 <span class="math math-inline">$a\sim\pi$</span> 下的均值，<span class="math math-inline">$Q-V$</span> 自然有正有负。<strong>优势函数（advantage function）</strong>：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+A^{\pi_\theta}(s_t^n,a_t^n) \;\triangleq\; Q_{\pi_\theta}(s_t^n,a_t^n) \;-\; V_{\pi_\theta}(s_t^n)
+\;}\tag{9.3}
+$$
+</div>
+<p>物理意义：在 <span class="math math-inline">$s_t^n$</span> 选择 <span class="math math-inline">$a_t^n$</span> 比&quot;按 <span class="math math-inline">$\pi$</span> 平均水平做&quot;好多少 —— <strong>正则定向信号</strong>，比 <span class="math math-inline">$G$</span> 的绝对值更纯粹。</p>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">为什么 advantage 比裸 <span class="math math-inline">$Q$</span> 更好用</span></div>
+  <div class="callout-body"><p>假如某状态所有动作 <span class="math math-inline">$Q$</span> 值都是 <span class="math math-inline">$+100$</span>，裸 <span class="math math-inline">$Q$</span> 会把所有动作的 log-prob 都往上推；用 advantage 后，由于 <span class="math math-inline">$V$</span> 是 <span class="math math-inline">$Q$</span> 的均值，&quot;全部 <span class="math math-inline">$+100$</span>&quot; 的状态下 <span class="math math-inline">$A\equiv 0$</span> —— 不更新。这与 baseline 的目标完全一致：<strong>只有相对优势才是教学信号</strong>。</p>
+</div>
+</div>
+<hr />
+<h2 id="3.-推导：从两网络到一网络（A2C-的诞生）">3. 推导：从两网络到一网络（A2C 的诞生）</h2>
+<p>直接按 (9.3) 实现要训两个网络（<span class="math math-inline">$Q_\phi$</span> 和 <span class="math math-inline">$V_\psi$</span>），估计误差风险翻倍。能不能只学一个？</p>
+<h3 id="Step-1-·-用-表达">Step 1 · 用 <span class="math math-inline">$V$</span> 表达 <span class="math math-inline">$Q$</span></h3>
+<p>由贝尔曼期望方程：</p>
+<div class="math math-block">
+$$
+Q_\pi(s_t,a_t) = \mathbb E\!\big[\,r_t + \gamma V_\pi(s_{t+1})\,\big|\,s_t,a_t\big]\tag{9.4}
+$$
+</div>
+<p>期望对环境的随机转移和奖励而言。</p>
+<h3 id="Step-2-·-一刀去掉外层期望（A3C-论文的工程选择）">Step 2 · 一刀去掉外层期望（A3C 论文的工程选择）</h3>
+<p>把 (9.4) 中的期望去掉，用单样本近似：</p>
+<div class="math math-block">
+$$
+Q_\pi(s_t,a_t)\;\approx\;r_t + \gamma V_\pi(s_{t+1})\tag{9.5}
+$$
+</div>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">这一步<strong>仍无偏</strong>，但方差变高；真正的偏差来自后面把 <span class="math math-inline">$V_\pi$</span> 换成 <span class="math math-inline">$V_\phi$</span></span></div>
+  <div class="callout-body"><p>当 <span class="math math-inline">$V$</span> 还是真值 <span class="math math-inline">$V_\pi$</span> 时，<span class="math math-inline">$r_t+\gamma V_\pi(s_{t+1})$</span> 是 <span class="math math-inline">$Q_\pi(s_t,a_t)$</span> 的<strong>无偏单样本估计</strong>（取期望恰等于 <span class="math math-inline">$Q$</span>），&quot;去掉期望&quot;本身只增加方差、不引入偏差。<strong>真正的偏差</strong>来自后续把 <span class="math math-inline">$V_\pi$</span> 替换为学到的 <span class="math math-inline">$V_\phi$</span>（函数近似 + bootstrap）。但 <span class="math math-inline">$r_t$</span> 只是<strong>单步</strong>随机量，方差远小于 <span class="math math-inline">$G_t$</span>（<span class="math math-inline">$T-t$</span> 步累加），所以工程上 TD-style 估计有利。原 A3C 论文实测了 MC、<span class="math math-inline">$n$</span>-step、纯 TD 等多种方案，结论是 <strong>bootstrap 类（n-step）综合优于 MC</strong>；A3C/A2C 默认采用 <span class="math math-inline">$n$</span>-step rollout（Atari 标配 <span class="math math-inline">$t_{\max}=5$</span>），TD(0) 是其 <span class="math math-inline">$n=1$</span> 的特例。</p>
+</div>
+</div>
+<h3 id="Step-3-·-代入-advantage，得到-TD-residual-形式">Step 3 · 代入 advantage，得到 TD-residual 形式</h3>
+<p>把 (9.5) 代入 (9.3)：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+A_t \;\approx\; \delta_t \;\triangleq\; r_t + \gamma V_\phi(s_{t+1}) - V_\phi(s_t)
+\;}\tag{9.6}
+$$
+</div>
+<p>这就是大名鼎鼎的 <strong>TD-error / TD-residual</strong>，同时充当：</p>
+<ul>
+<li><strong>actor 的 advantage 信号</strong></li>
+<li><strong>critic 自身的训练误差</strong>（critic 学 <span class="math math-inline">$V$</span> 的目标就是让 <span class="math math-inline">$\delta$</span> 平均为 0）</li>
+</ul>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">一石二鸟</span></div>
+  <div class="callout-body"><p>引入 <span class="math math-inline">$V_\phi$</span> 一个网络，既给 actor 提供低方差的 advantage，又能用同样的 <span class="math math-inline">$\delta_t$</span> 自我训练 critic。这是 A2C 工程上&quot;只估一个网络&quot;的精妙之处。</p>
+</div>
+</div>
+<h3 id="Step-4-·-A2C-的策略梯度">Step 4 · A2C 的策略梯度</h3>
+<p>把 (9.6) 代入 REINFORCE：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+\nabla \bar R_\theta \approx \frac{1}{N}\sum_{n=1}^{N}\sum_{t=1}^{T_n}
+\big(r_t^{n} + \gamma V_\phi(s_{t+1}^{n}) - V_\phi(s_t^{n})\big)
+\,\nabla\log p_\theta(a_t^n\mid s_t^n)
+\;}\tag{9.7}
+$$
+</div>
+<div class="callout callout-danger" style="border-left-color:#ef4444; background:#ef444414;">
+  <div class="callout-title"><span class="callout-icon">🔥</span><span class="callout-title-text">advantage 必须 detach</span></div>
+  <div class="callout-body"><p><span class="math math-inline">$\delta_t$</span> 里出现了 <span class="math math-inline">$V_\phi$</span>，但这一项<strong>只是用作 actor 的&quot;系数&quot;</strong>，不能让 actor 的梯度顺着它流回到 critic（否则 actor 被迫去优化 <span class="math math-inline">$V$</span>，目标错位）。代码里必须 <code>advantage.detach()</code>。详见 §7。</p>
+</div>
+</div>
+<hr />
+<h2 id="4.-直观解读">4. 直观解读</h2>
+<h3 id="4.1-类比：&quot;教练（critic）+-选手（actor）&quot;">4.1 类比：&quot;教练（critic）+ 选手（actor）&quot;</h3>
+<table>
+<thead>
+<tr>
+<th>角色</th>
+<th>强化学习</th>
+<th>现实类比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Actor</td>
+<td><span class="math math-inline">$\pi_\theta(a\mid s)$</span>，输出动作</td>
+<td>选手做出动作</td>
+</tr>
+<tr>
+<td>Critic</td>
+<td><span class="math math-inline">$V_\phi(s)$</span>，给状态打分</td>
+<td>教练评估&quot;刚才那一拍打得比你平均水平高/低&quot;</td>
+</tr>
+<tr>
+<td>Advantage</td>
+<td><span class="math math-inline">$\delta_t$</span></td>
+<td>&quot;这一拍比平均水平高 +0.3&quot; 的具体差值</td>
+</tr>
+<tr>
+<td>Critic 自训</td>
+<td>让 <span class="math math-inline">$V_\phi(s_t)\to r_t+\gamma V_\phi(s_{t+1})$</span></td>
+<td>教练根据&quot;这一拍后实际局势&quot;修正自己之前的预判</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">与监督学习的对应</span></div>
+  <div class="callout-body"><p>Critic 像回归头：标签是 bootstrap 后的 TD target；actor 像分类头：损失权重是 advantage（负值=希望降低概率，正值=希望提高）。两者共享 backbone 是非常自然的多任务学习。</p>
+</div>
+</div>
+<h3 id="4.2-与-DQN-的根本区别">4.2 与 <span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span> 的根本区别</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>DQN（pure value）</th>
+<th>Actor-Critic</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>决策</td>
+<td><span class="math math-inline">$\pi(s)=\arg\max_a Q$</span> → 离散且确定</td>
+<td>直接采样 <span class="math math-inline">$a\sim\pi_\theta$</span> → 离散 / 连续 / 随机</td>
+</tr>
+<tr>
+<td>critic 角色</td>
+<td><strong>代替策略</strong>（决策者）</td>
+<td><strong>辅助策略</strong>（教练）</td>
+</tr>
+<tr>
+<td>探索</td>
+<td>外加 <span class="math math-inline">$\varepsilon$</span>-greedy</td>
+<td>自带（采样）+ entropy bonus</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="5.-工程实现技巧">5. 工程实现技巧</h2>
+<h3 id="技巧-1-·-actor-/-critic-共享前-backbone">技巧 1 · actor / critic 共享前 backbone</h3>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">naive 做法的痛点</span></div>
+  <div class="callout-body"><p>如果两个网络完全独立，对于 Atari 这种像素输入，两份 CNN 各自学一遍特征，参数量翻倍且数据效率低。</p>
+</div>
+</div>
+<p><strong>做法</strong>：演员和评论员<strong>共享前几层卷积</strong>，最后接两个独立的 head：</p>
+<pre><code>        ┌→ V_head (1 标量)        → critic loss
+CNN(s) ─┤
+        └→ π_head (动作分布)       → actor loss (× advantage.detach())
+</code></pre>
+<p>总损失：</p>
+<div class="math math-block">
+$$
+\mathcal L = \mathcal L_{\text{actor}} + c_v\,\mathcal L_{\text{critic}} - c_e\,\mathcal H[\pi(\cdot|s)]
+$$
+</div>
+<p>典型超参：<span class="math math-inline">$c_v=0.5$</span>，<span class="math math-inline">$c_e=0.01$</span>。</p>
+<h3 id="技巧-2-·-entropy-bonus-防止策略过早确定">技巧 2 · entropy bonus 防止策略过早确定</h3>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">naive 做法的痛点</span></div>
+  <div class="callout-body"><p>没有 entropy 约束时，<span class="math math-inline">$\pi_\theta$</span> 容易很快坍缩到一个动作（log-prob 梯度自我强化），失去探索能力，陷入次优。</p>
+</div>
+</div>
+<p>加入熵正则项（<strong>最大化</strong>熵 → 损失里<strong>减去</strong> <span class="math math-inline">$c_e\mathcal H$</span>）：</p>
+<div class="math math-block">
+$$
+\mathcal H[\pi(\cdot|s)] = -\sum_a \pi_\theta(a|s)\log\pi_\theta(a|s)
+$$
+</div>
+<p>熵越大 → 分布越均匀 → 探索越多。<span class="math math-inline">$c_e$</span> 通常从 <span class="math math-inline">$0.01$</span> 开始，训练后期可衰减。</p>
+<h3 id="技巧-3-·-advantage-detach（最易写错）">技巧 3 · advantage detach（最易写错）</h3>
+<div class="callout callout-danger" style="border-left-color:#ef4444; background:#ef444414;">
+  <div class="callout-title"><span class="callout-icon">🔥</span><span class="callout-title-text">必修陷阱</span></div>
+  <div class="callout-body"><pre><code class="language-python"># ❌ 错：advantage 没 detach，actor 的梯度会通过 V 流到 critic
+advantage = r + gamma * V(s_next) - V(s)
+actor_loss = -(log_prob * advantage).mean()
+</code></pre>
+<p>这样训练时 actor 会&quot;诱导 critic 把 V 调成对自己有利的值&quot;，破坏 critic 的预测无偏性。</p>
+<pre><code class="language-python"># ✅ 对：actor 的 advantage 只当系数
+advantage = (r + gamma * V(s_next) - V(s)).detach()
+actor_loss = -(log_prob * advantage).mean()
+# critic 单独有 loss
+critic_loss = (V(s) - (r + gamma * V(s_next).detach())).pow(2).mean()
+</code></pre>
+</div>
+</div>
+<h3 id="技巧-4-·-TD-target-也要-detach">技巧 4 · TD target 也要 detach</h3>
+<div class="callout callout-danger" style="border-left-color:#ef4444; background:#ef444414;">
+  <div class="callout-title"><span class="callout-icon">🔥</span><span class="callout-title-text">critic 的另一陷阱</span></div>
+  <div class="callout-body"><p>critic 的回归目标 <span class="math math-inline">$y_t = r_t + \gamma V_\phi(s_{t+1})$</span> 里的 <span class="math math-inline">$V_\phi(s_{t+1})$</span> <strong>不能</strong>让梯度回流，否则相当于让 critic&quot;调整未来的预测来匹配现在的预测&quot;，自举循环失稳。代码：<code>y = r + gamma * V(s_next).detach()</code>。</p>
+</div>
+</div>
+<h3 id="技巧-5-·-MC-vs-TD-advantage-的取舍">技巧 5 · MC vs TD advantage 的取舍</h3>
+<table>
+<thead>
+<tr>
+<th>形式</th>
+<th>公式</th>
+<th>偏差</th>
+<th>方差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MC</td>
+<td><span class="math math-inline">$G_t - V_\phi(s_t)$</span></td>
+<td>无偏</td>
+<td>大（<span class="math math-inline">$T-t$</span> 步累加）</td>
+</tr>
+<tr>
+<td>TD(0)</td>
+<td><span class="math math-inline">$r_t + \gamma V_\phi(s_{t+1}) - V_\phi(s_t)$</span></td>
+<td>有偏（<span class="math math-inline">$V_\phi$</span> 不准时）</td>
+<td>小</td>
+</tr>
+<tr>
+<td><strong>n-step / <span class="wikilink" data-target="GAE" title="GAE">GAE</span></strong></td>
+<td><span class="math math-inline">$\sum_{k=0}^{n-1}\gamma^k r_{t+k} + \gamma^n V(s_{t+n}) - V(s_t)$</span></td>
+<td>折中</td>
+<td>折中</td>
+</tr>
+</tbody>
+</table>
+<p>实战常用 <span class="wikilink" data-target="GAE" title="GAE">Generalized Advantage Estimation</span> 在偏差-方差间权衡。</p>
+<hr />
+<h2 id="6.-具体算法">6. 具体算法</h2>
+<h3 id="6.1-A2C（Advantage-Actor-Critic）">6.1 A2C（Advantage Actor-Critic）</h3>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">A2C 伪代码（同步版）</span></div>
+  <div class="callout-body"><pre><code>初始化：actor π_θ、critic V_φ（可共享 backbone）
+repeat:
+  # 1. rollout：用当前 π_θ 跑 N 个并行环境，每个跑 T 步
+  收集 {(s_t, a_t, r_t, s_{t+1}, done_t)}
+
+  # 2. 计算 returns 和 advantages（n-step 或 TD(0)）
+  for t = T-1 downto 0:
+    R_t = r_t + γ * R_{t+1} * (1 - done_t)        # n-step return
+    A_t = R_t - V_φ(s_t)                          # advantage（detach 形式）
+
+  # 3. 计算损失
+  L_actor   = -mean(log π_θ(a_t|s_t) * A_t.detach())
+  L_critic  = mean((R_t.detach() - V_φ(s_t))^2)
+  L_entropy = mean(H[π_θ(·|s_t)])                # 正熵（待最大化）
+  L = L_actor + 0.5 * L_critic - 0.01 * L_entropy
+
+  # 4. 反向传播 + Adam
+  θ, φ ← θ, φ - α * ∇L
+until 收敛
+</code></pre>
+</div>
+</div>
+<h3 id="6.2-A3C（Asynchronous-Advantage-Actor-Critic）">6.2 A3C（Asynchronous Advantage Actor-Critic）</h3>
+<p>A3C = A2C + <strong>异步多 worker</strong>。Easy-RL 教材用《火影忍者》&quot;鸣人影分身&quot;做类比——多个分身各自修行、把经验汇回本体：</p>
+<ol>
+<li>全局参数 <span class="math math-inline">$\theta$</span> 放中央服务器；</li>
+<li><span class="math math-inline">$K$</span> 个 worker（每个一颗 CPU 核），各自把全局 <span class="math math-inline">$\theta$</span> <strong>拷贝</strong>到本地，跑自己的 rollout，算梯度 <span class="math math-inline">$g_k$</span>；</li>
+<li>每个 worker 算完梯度就异步推回中央，<strong>不等其他 worker</strong>：用 <span class="math math-inline">$g_k$</span> 直接 in-place 更新 <span class="math math-inline">$\theta$</span>。</li>
+</ol>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">异步带来的&quot;过期梯度&quot;</span></div>
+  <div class="callout-body"><p>worker 拿走时是 <span class="math math-inline">$\theta_1$</span>，推回梯度时全局可能已经更新到 <span class="math math-inline">$\theta_2$</span> —— 梯度方向是基于&quot;过时的策略&quot;算的。论文的核心收益其实来自<strong>多 worker 并行采样带来的样本去相关化</strong>（每个 worker 在不同环境/不同起点采，样本天然独立，类似 <span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span> 经验回放的去相关效果）；异步带来的 stale gradient 是工程取舍，论文实测对收敛影响有限——但&quot;有用&quot;的功劳主要在&quot;并行去相关&quot;，不在&quot;过期&quot;本身。</p>
+<p>现代框架（PyTorch 1.x+, GPU 普及）下，<strong>同步的 A2C</strong> 通过向量化环境（<code>SubprocVecEnv</code>）配合一颗 GPU 通常更快也更稳，A3C 已不是首选。&quot;A2C is to A3C what synchronous SGD is to ASGD&quot;（OpenAI 博客）。</p>
+</div>
+</div>
+<hr />
+<h2 id="7.-路径衍生策略梯度（Pathwise-Derivative）：通往-DDPG">7. 路径衍生策略梯度（Pathwise Derivative）：通往 <span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span></h2>
+<h3 id="7.1-普通-critic-的局限">7.1 普通 critic 的局限</h3>
+<p>A2C 里 critic 只告诉 actor &quot;刚才那个动作好/不好&quot;（一个标量 advantage）。但它<strong>没说清楚什么动作更好</strong>——actor 只能靠采样和 log-prob 梯度慢慢摸。</p>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">棋魂类比（原文）</span></div>
+  <div class="callout-body"><p>普通 critic 像佐为说&quot;小马步飞不行&quot;——只评判，不指路。<strong>Pathwise critic</strong> 进一步告诉 actor&quot;这时应该下大马步飞&quot;——直接给方向。</p>
+</div>
+</div>
+<h3 id="7.2-视角一：DQN-的-argmax-困难">7.2 视角一：DQN 的 argmax 困难</h3>
+<p><span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span> 在连续动作下没法做 <span class="math math-inline">$\arg\max_a Q(s,a)$</span>（无法枚举），也没有解析解。<strong>思路</strong>：再训一个网络 <span class="math math-inline">$\mu_\theta$</span> 去近似 <span class="math math-inline">$\arg\max$</span>，让</p>
+<div class="math math-block">
+$$
+\mu_\theta(s) \;\approx\; \underset{a}{\arg\max}\;Q_\phi(s,a)\tag{9.8}
+$$
+</div>
+<p>训练目标：让 <span class="math math-inline">$Q_\phi(s,\mu_\theta(s))$</span> 尽可能大（梯度上升）。</p>
+<h3 id="7.3-视角二：actor-critic-的&quot;指路-critic&quot;">7.3 视角二：actor-critic 的&quot;指路 critic&quot;</h3>
+<p>Pathwise actor 的损失：</p>
+<div class="math math-block">
+$$
+\mathcal L_{\text{actor}}^{\text{DDPG}} = -\mathbb E_{s\sim\mathcal D}\!\big[Q_\phi(s,\mu_\theta(s))\big]
+$$
+</div>
+<p>注意：actor 是<strong>确定性策略</strong> <span class="math math-inline">$a=\mu_\theta(s)$</span>（不是分布），<span class="math math-inline">$Q_\phi$</span> 关于 <span class="math math-inline">$a$</span> 可微，链式法则：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+\nabla_\theta J = \mathbb E_{s\sim\mathcal D}\!\Big[\;
+\underbrace{\nabla_a Q_\phi(s,a)\big|_{a=\mu_\theta(s)}}_{\text{critic 对 a 的梯度（指路）}}
+\cdot
+\underbrace{\nabla_\theta \mu_\theta(s)}_{\text{actor 雅可比}}
+\;\Big]
+\;}\tag{9.9}
+$$
+</div>
+<p>这就是<strong>确定性策略梯度定理</strong>（Silver et al. 2014）。两段梯度按链式法则相乘 —— &quot;critic 告诉你哪个方向 <span class="math math-inline">$Q$</span> 增大；actor 学会朝那个方向输出动作&quot;。</p>
+<h3 id="7.4-与-GAN-的对偶">7.4 与 GAN 的对偶</h3>
+<table>
+<thead>
+<tr>
+<th>强化学习</th>
+<th>GAN</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Actor <span class="math math-inline">$\mu_\theta$</span></td>
+<td>Generator <span class="math math-inline">$G$</span></td>
+</tr>
+<tr>
+<td>Critic <span class="math math-inline">$Q_\phi$</span>（条件于 <span class="math math-inline">$s$</span>）</td>
+<td>Discriminator <span class="math math-inline">$D$</span></td>
+</tr>
+<tr>
+<td>训练：固定 <span class="math math-inline">$Q$</span>，最大化 <span class="math math-inline">$Q(s,\mu_\theta(s))$</span></td>
+<td>训练 <span class="math math-inline">$G$</span> 时固定 <span class="math math-inline">$D$</span>，最大化 <span class="math math-inline">$D(G(z))$</span></td>
+</tr>
+</tbody>
+</table>
+<p>两者都是&quot;内层 max, 外层学一个 solver 来逼近&quot;。</p>
+<h3 id="7.5-DDPG-=-pathwise-actor-critic-+-DQN-工程-trick">7.5 <span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span> = pathwise actor-critic + DQN 工程 trick</h3>
+<p>从 <span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span> 改成 DDPG，需要 4 处替换（原文图 9.11）：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>DQN</th>
+<th>DDPG</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>用 <span class="math math-inline">$Q$</span> 决定 <span class="math math-inline">$a_t$</span>（<span class="math math-inline">$\arg\max$</span>）</td>
+<td>用 actor <span class="math math-inline">$\mu_\theta(s_t)$</span> 决定 <span class="math math-inline">$a_t$</span></td>
+<td>actor 取代 argmax</td>
+</tr>
+<tr>
+<td>2</td>
+<td>TD target 用 <span class="math math-inline">$\max_a \hat Q(s_{i+1},a)$</span></td>
+<td>用 <span class="math math-inline">$\hat Q(s_{i+1},\hat\mu_{\hat\theta}(s_{i+1}))$</span></td>
+<td>actor 在 target 端也取代 argmax</td>
+</tr>
+<tr>
+<td>3</td>
+<td>只学 <span class="math math-inline">$Q_\phi$</span></td>
+<td>多学 <span class="math math-inline">$\mu_\theta$</span>，目标是 <span class="math math-inline">$\max Q_\phi(s,\mu_\theta(s))$</span></td>
+<td>新增 actor 训练</td>
+</tr>
+<tr>
+<td>4</td>
+<td>只有 target <span class="math math-inline">$\hat Q$</span></td>
+<td><strong>同时</strong>有 target <span class="math math-inline">$\hat Q$</span> 和 target <span class="math math-inline">$\hat\mu$</span></td>
+<td>双 target，软更新 <span class="math math-inline">$\tau$</span>-Polyak</td>
+</tr>
+</tbody>
+</table>
+<p>DDPG 几乎照搬 DQN 工程：经验回放、target network（区别：用 <strong>soft update</strong> <span class="math math-inline">$\hat\theta\leftarrow\tau\theta+(1-\tau)\hat\theta$</span>，原始 Lillicrap 2015 论文 <span class="math math-inline">$\tau=0.001$</span>，现代实现（SpinningUp / TD3 / SAC）常用 <span class="math math-inline">$\tau=0.005$</span>，而非 DQN 的硬 C 步同步）、外加 OU/Gaussian 噪声做探索。</p>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">与 A2C/A3C 的本质区别</span></div>
+  <div class="callout-body"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>A2C/A3C</th>
+<th>DDPG（pathwise）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>策略</td>
+<td>随机 <span class="math math-inline">$\pi_\theta(a\mid s)$</span></td>
+<td><strong>确定性</strong> <span class="math math-inline">$a=\mu_\theta(s)$</span></td>
+</tr>
+<tr>
+<td>actor 梯度</td>
+<td>log-prob × advantage</td>
+<td><span class="math math-inline">$\nabla_a Q\cdot\nabla_\theta\mu$</span>（链式法则）</td>
+</tr>
+<tr>
+<td>on/off policy</td>
+<td>on-policy</td>
+<td><strong>off-policy（带 replay）</strong></td>
+</tr>
+<tr>
+<td>适用动作</td>
+<td>离散/连续</td>
+<td><strong>仅连续</strong>（依赖 <span class="math math-inline">$\nabla_a Q$</span>）</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<p>DDPG 的两条<strong>独立</strong>改进路线（同年 ICML 2018 几乎同期提出，并非串联演进）：</p>
+<ul>
+<li><span class="wikilink" data-target="TD3" title="TD3">TD3</span>（Fujimoto et al. 2018）：双 critic 取最小、actor 延迟更新、target policy smoothing —— 解决 DDPG 的 Q 值高估和不稳定问题，仍走&quot;确定性 actor&quot;路线。</li>
+<li><span class="wikilink" data-target="SAC" title="SAC">SAC</span>（Haarnoja et al. 2018）：换回<strong>随机</strong> squashed Gaussian actor + 最大熵目标 + 自动调温度 <span class="math math-inline">$\alpha$</span> —— 把&quot;探索&quot;内化进目标函数，不再依赖外部噪声。</li>
+</ul>
+<hr />
+<h2 id="8.-与-GAN-的统一视角">8. 与 GAN 的统一视角</h2>
+<p>如原论文 <a href="https://arxiv.org/abs/1610.01945" target="_blank" rel="noopener noreferrer">&quot;Connecting Generative Adversarial Networks and Actor-Critic Methods&quot;</a>（Pfau &amp; Vinyals, 2016）所指，二者都是双网络博弈：</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>GAN</th>
+<th>Actor-Critic</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>网络 A</td>
+<td>Generator <span class="math math-inline">$G$</span></td>
+<td>Actor <span class="math math-inline">$\pi_\theta/\mu_\theta$</span></td>
+</tr>
+<tr>
+<td>网络 B</td>
+<td>Discriminator <span class="math math-inline">$D$</span></td>
+<td>Critic <span class="math math-inline">$V_\phi/Q_\phi$</span></td>
+</tr>
+<tr>
+<td>训 A 时</td>
+<td>固定 <span class="math math-inline">$D$</span>，让 <span class="math math-inline">$G$</span> 骗 <span class="math math-inline">$D$</span></td>
+<td>固定 critic，让 actor 提升 advantage / Q</td>
+</tr>
+<tr>
+<td>训 B 时</td>
+<td>固定 <span class="math math-inline">$G$</span>，让 <span class="math math-inline">$D$</span> 区分真假</td>
+<td>固定 actor，让 critic 拟合真实 V/Q</td>
+</tr>
+<tr>
+<td>训练难点</td>
+<td>两者必须同步进步</td>
+<td>同上：critic 不准则 advantage 误导 actor</td>
+</tr>
+</tbody>
+</table>
+<p>工程上 GAN 的稳训技巧（spectral norm、谱归一、双时间尺度更新 TTUR）也常迁移到 actor-critic。</p>
+<hr />
+<h2 id="9.-Cheat-Sheet">9. Cheat Sheet</h2>
+<h3 id="9.1-A2C-最小可跑代码（PyTorch）">9.1 A2C 最小可跑代码（PyTorch）</h3>
+<pre><code class="language-python">import torch, torch.nn as nn, torch.nn.functional as F
+from torch.distributions import Categorical
+
+class ActorCritic(nn.Module):
+    def __init__(self, obs_dim, n_act, hidden=128):
+        super().__init__()
+        self.shared = nn.Sequential(nn.Linear(obs_dim, hidden), nn.ReLU())
+        self.pi    = nn.Linear(hidden, n_act)   # actor head
+        self.v     = nn.Linear(hidden, 1)       # critic head
+
+    def forward(self, s):                       # s: [B, obs_dim] float32
+        h = self.shared(s)
+        return self.pi(h), self.v(h).squeeze(-1)   # logits[B,n_act], V[B]
+
+# --- 一个 update step ---
+logits, V       = net(s)                        # s,s_next: float32
+_, V_next       = net(s_next)
+target          = (r + gamma * V_next * (1.0 - done)).detach()   # ❶ TD target detach
+advantage       = (target - V).detach()                          # ❷ advantage detach
+
+dist            = Categorical(logits=logits)
+log_prob        = dist.log_prob(a)              # a: long
+entropy         = dist.entropy()
+
+actor_loss      = -(log_prob * advantage).mean()                 # ❸ 注意负号
+critic_loss     = F.mse_loss(V, target)
+entropy_bonus   = entropy.mean()
+
+loss = actor_loss + 0.5 * critic_loss - 0.01 * entropy_bonus
+optim.zero_grad(); loss.backward()
+nn.utils.clip_grad_norm_(net.parameters(), 0.5)                  # ❹ 梯度裁剪
+optim.step()
+</code></pre>
+<div class="callout callout-summary" style="border-left-color:#64748b; background:#64748b14;">
+  <div class="callout-title"><span class="callout-icon">📌</span><span class="callout-title-text">常见坑（按踩坑频率排序）</span></div>
+  <div class="callout-body"><ul>
+<li><strong>advantage 没 detach</strong> → actor 梯度污染 critic，训练发散。 <strong>必修</strong>。</li>
+<li><strong>TD target 没 detach</strong> → critic 自举循环失稳。<code>V_next.detach()</code>。</li>
+<li><strong>actor loss 漏负号</strong>：策略梯度是<strong>最大化</strong> <span class="math math-inline">$\log\pi\cdot A$</span>，loss 要 <code>-(...)</code>。</li>
+<li><strong>action dtype</strong>：<code>Categorical.log_prob(a)</code> 要求 <code>a</code> 是 <code>long</code>；状态用 <code>float32</code>。</li>
+<li><strong>done mask 漏乘</strong>：terminal 后没有 <span class="math math-inline">$V(s_{t+1})$</span>，必须 <code>target = r + γ V_next * (1-done)</code>。</li>
+<li><strong>熵系数过大</strong>：策略一直均匀，学不到东西；过小则过早确定。<span class="math math-inline">$c_e\in[0.001, 0.05]$</span>。</li>
+<li><strong>value loss 系数 <span class="math math-inline">$c_v$</span></strong>：通常 <span class="math math-inline">$0.5$</span>。共享 backbone 时，<span class="math math-inline">$c_v$</span> 太大会让 backbone 偏向&quot;学 V&quot;，actor 受拖累。</li>
+<li><strong>A2C 是 on-policy</strong>：rollout 数据用一次就丢，不能塞 replay buffer 反复用。要复用必须做重要性采样 → 直接上 <span class="wikilink" data-target="PPO教程" title="PPO教程">PPO</span>。</li>
+<li><strong>共享 backbone 时</strong>：actor/critic 头的学习率可以分开调；很多实现给 critic head 更大 lr。</li>
+<li><strong>DDPG 的 replay</strong>：DDPG 是 off-policy，必须用 replay buffer + target network，否则发散。</li>
+<li><strong>DDPG 探索</strong>：<code>a = μ(s) + noise</code>（OU 或 Gaussian），test 时 <code>noise=0</code>。</li>
+</ul>
+</div>
+</div>
+<h3 id="9.2-典型超参（CartPole-/-Atari-量级）">9.2 典型超参（CartPole / Atari 量级）</h3>
+<table>
+<thead>
+<tr>
+<th>超参</th>
+<th>典型值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math math-inline">$\gamma$</span></td>
+<td>0.99</td>
+</tr>
+<tr>
+<td>学习率</td>
+<td>7e-4（A2C） / 1e-4 actor &amp; 1e-3 critic（DDPG）</td>
+</tr>
+<tr>
+<td>n-step rollout</td>
+<td>5（A2C）/ 单步（DDPG）</td>
+</tr>
+<tr>
+<td>并行环境数</td>
+<td>16（A2C）</td>
+</tr>
+<tr>
+<td><span class="math math-inline">$c_v$</span>（value loss 系数）</td>
+<td>0.5</td>
+</tr>
+<tr>
+<td><span class="math math-inline">$c_e$</span>（entropy 系数）</td>
+<td>0.01</td>
+</tr>
+<tr>
+<td>grad clip</td>
+<td>0.5</td>
+</tr>
+<tr>
+<td>Polyak <span class="math math-inline">$\tau$</span>（DDPG）</td>
+<td>0.005</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10.-一图总览">10. 一图总览</h2>
+<pre><code class="language-dot">digraph G {
+  rankdir=TB;
+  node [shape=box, style=&quot;rounded,filled&quot;, fillcolor=&quot;#f0f4ff&quot;, fontname=&quot;Helvetica&quot;];
+
+  PG       [label=&quot;策略梯度目标\n∇R̄ = E[G_t · ∇log π]&quot;];
+  REINF    [label=&quot;REINFORCE\n用样本 G_t 估期望&quot;, fillcolor=&quot;#fff4d6&quot;];
+  Var      [label=&quot;痛点：G_t 方差大\n + 必须等回合结束&quot;, fillcolor=&quot;#ffe4e1&quot;];
+
+  Base     [label=&quot;减基线 b\n→ G_t - b\n降方差，期望不变&quot;, fillcolor=&quot;#fff4d6&quot;];
+  Q        [label=&quot;关键身份\nE[G_t|s,a] = Q_π(s,a)&quot;, fillcolor=&quot;#fff4d6&quot;];
+  Adv      [label=&quot;advantage\nA = Q - V&quot;, fillcolor=&quot;#fff4d6&quot;];
+
+  AC       [label=&quot;Actor-Critic\nactor: π_θ\ncritic: V_φ&quot;];
+
+  TD       [label=&quot;TD 近似（去掉 E）\nQ ≈ r + γV(s&#x27;)&quot;, fillcolor=&quot;#fff4d6&quot;];
+  A2C      [label=&quot;A2C\nδ_t = r + γV(s&#x27;) - V(s)\n单步更新、低方差&quot;, fillcolor=&quot;#d6ffd6&quot;];
+  A3C      [label=&quot;A3C\n多 worker 异步&quot;, fillcolor=&quot;#d6ffd6&quot;];
+
+  PWD      [label=&quot;Pathwise critic\nactor 直接最大化 Q(s,μ_θ(s))&quot;, fillcolor=&quot;#fff4d6&quot;];
+  DDPG     [label=&quot;DDPG\n确定性 actor + DQN 工程\nreplay + target net + soft update&quot;, fillcolor=&quot;#ffd6d6&quot;];
+  TD3      [label=&quot;TD3 / SAC\n双 critic / 最大熵&quot;, fillcolor=&quot;#ffd6d6&quot;];
+
+  PPO      [label=&quot;PPO\n+ importance sampling\n+ clip 约束&quot;, fillcolor=&quot;#ffd6d6&quot;];
+
+  PG -&gt; REINF -&gt; Var;
+  Var -&gt; Base -&gt; AC;
+  Var -&gt; Q -&gt; Adv -&gt; AC;
+  AC -&gt; TD -&gt; A2C -&gt; A3C;
+  A2C -&gt; PPO;
+  AC -&gt; PWD -&gt; DDPG -&gt; TD3;
+}
+</code></pre>
+<p><strong>配色约定</strong>：浅蓝=起点/概念；浅黄=关键 trick；浅红=痛点；浅绿=本章核心算法；红=下游 SOTA。</p>
+<hr />
+<h2 id="11.-关联笔记">11. 关联笔记</h2>
+<ul>
+<li>上游：<span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span>（REINFORCE / log-derivative trick / baseline）、<span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span>（critic 的工程稳定术：target net、replay）</li>
+<li>平行：<span class="wikilink" data-target="GAE" title="GAE">GAE</span>（n-step 的偏差-方差权衡，A2C/PPO 实战必备）</li>
+<li>下游：
+<ul>
+<li><span class="wikilink" data-target="PPO教程" title="PPO教程">PPO</span> —— A2C + 重要性采样 + clip，工业默认</li>
+<li><span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span> —— 路径导数 actor-critic + DQN 工程</li>
+<li><span class="wikilink" data-target="TD3" title="TD3">TD3</span> —— DDPG + 双 critic / 延迟更新 / 目标平滑</li>
+<li><span class="wikilink" data-target="SAC" title="SAC">SAC</span> —— DDPG 思路 + 最大熵框架，连续控制 SOTA</li>
+</ul>
+</li>
+<li>相关：<span class="wikilink" data-target="GAN" title="GAN">GAN</span>（与 actor-critic 的双网络对偶）、<span class="wikilink" data-target="Bellman 方程" title="Bellman 方程">Bellman 方程</span>、<span class="wikilink" data-target="价值函数" title="价值函数">价值函数</span></li>
+<li>原文：<a href="https://datawhalechina.github.io/easy-rl/#/chapter9/chapter9" target="_blank" rel="noopener noreferrer">Easy-RL 第 9 章 · 演员-评论员算法</a></li>
+</ul>
+
+</main>
+</body>
+</html>

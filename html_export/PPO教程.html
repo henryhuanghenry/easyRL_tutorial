@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PPO（Proximal Policy Optimization）教程</title>
+  <link rel="stylesheet" href="_assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3/lib/viz-standalone.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async function () {
+      // 1. highlight.js — only on blocks that opted in via language-XXX class
+      try {
+        document.querySelectorAll('pre code').forEach(function (block) {
+          if (block.classList.contains('language-dot')) return;
+          if (block.classList.contains('language-mermaid')) return;
+          // Skip auto-detect on un-tagged blocks (e.g. ASCII diagrams) — hljs
+          // mis-classifies short text and recolours it badly.
+          var hasLang = false;
+          for (var i = 0; i < block.classList.length; i++) {
+            if (block.classList[i].indexOf('language-') === 0) { hasLang = true; break; }
+          }
+          if (!hasLang) return;
+          window.hljs && window.hljs.highlightElement(block);
+        });
+      } catch (e) { console.warn('hljs failed', e); }
+
+      // 2. Graphviz: replace <pre><code class="language-dot"> with rendered SVG
+      try {
+        if (window.Viz && typeof window.Viz.instance === 'function') {
+          const vizInstance = await window.Viz.instance();
+          document.querySelectorAll('pre code.language-dot').forEach(function (block) {
+            try {
+              const svg = vizInstance.renderSVGElement(block.textContent);
+              const wrapper = document.createElement('div');
+              wrapper.className = 'graphviz';
+              wrapper.appendChild(svg);
+              block.parentElement.replaceWith(wrapper);
+            } catch (err) {
+              console.error('viz render failed', err);
+              block.parentElement.classList.add('graphviz-error');
+            }
+          });
+        } else {
+          console.warn('viz-js not loaded');
+        }
+      } catch (e) { console.warn('viz init failed', e); }
+
+      // 3. Mermaid
+      try {
+        if (window.mermaid) {
+          window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+          await window.mermaid.run({ querySelector: 'pre.mermaid' });
+        }
+      } catch (e) { console.warn('mermaid failed', e); }
+
+      // 4. KaTeX last so it does not fight hljs/viz
+      try {
+        if (window.renderMathInElement) {
+          window.renderMathInElement(document.body, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$',  right: '$',  display: false }
+            ],
+            throwOnError: false,
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+          });
+        }
+      } catch (e) { console.warn('katex failed', e); }
+    });
+  </script>
+</head>
+<body>
+<header class="meta">
+  <h1 class="doc-title">PPO（Proximal Policy Optimization）教程</h1>
+  <div class="meta-row">
+    <span class="meta-tags"><span class="meta-tag">#强化学习</span><span class="meta-tag">#策略梯度</span><span class="meta-tag">#PPO</span><span class="meta-tag">#TRPO</span><span class="meta-tag">#重要性采样</span><span class="meta-tag">#RL</span></span>
+    <span class="meta-source">来源：<a href="https://datawhalechina.github.io/easy-rl/#/chapter5/chapter5">https://datawhalechina.github.io/easy-rl/#/chapter5/chapter5</a></span>
+    <span class="meta-date">2026-06-14</span>
+  </div>
+</header>
+
+<main class="doc">
+<h1 id="PPO（Proximal-Policy-Optimization）">PPO（Proximal Policy Optimization）</h1>
+<div class="callout callout-abstract" style="border-left-color:#7c3aed; background:#7c3aed14;">
+  <div class="callout-title"><span class="callout-icon">📋</span><span class="callout-title-text">一句话</span></div>
+  <div class="callout-body"><p>PPO = <strong>重要性采样</strong>把策略梯度从 on-policy 变成&quot;伪 off-policy&quot;（一批数据多次更新）+ <strong>约束新旧策略别走太远</strong>（KL 惩罚 / clip 裁剪），从而在保持稳定性的同时大幅提高样本效率。它是 OpenAI 的默认 RL 算法。</p>
+</div>
+</div>
+<hr />
+<h2 id="1.-背景：为什么要-PPO">1. 背景：为什么要 PPO</h2>
+<h3 id="1.1-同策略-vs-异策略">1.1 同策略 vs 异策略</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>同策略 on-policy</th>
+<th>异策略 off-policy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>定义</td>
+<td>学习的智能体 = 与环境交互的智能体</td>
+<td>学习的智能体 ≠ 与环境交互的智能体</td>
+</tr>
+<tr>
+<td>数据复用</td>
+<td>❌ 用完即弃</td>
+<td>✅ 可反复用</td>
+</tr>
+<tr>
+<td>代表</td>
+<td>REINFORCE、A2C</td>
+<td>DQN、SAC</td>
+</tr>
+<tr>
+<td>样本效率</td>
+<td>低</td>
+<td>高</td>
+</tr>
+</tbody>
+</table>
+<h3 id="1.2-原始策略梯度的痛点">1.2 原始策略梯度的痛点</h3>
+<div class="math math-block">
+$$
+\nabla \bar R_\theta = \mathbb E_{\tau\sim p_\theta(\tau)}\bigl[R(\tau)\nabla\log p_\theta(\tau)\bigr]\tag{5.1}
+$$
+</div>
+<div class="callout callout-danger" style="border-left-color:#ef4444; background:#ef444414;">
+  <div class="callout-title"><span class="callout-icon">🔥</span><span class="callout-title-text">On-policy 的诅咒</span></div>
+  <div class="callout-body"><p>期望是对 <span class="math math-inline">$\pi_\theta$</span> 采样的轨迹求。<strong>只要 <span class="math math-inline">$\theta$</span> 一更新成 <span class="math math-inline">$\theta'$</span>，老数据立刻失效</strong>，必须重新跟环境交互采样。深度 RL 里环境交互通常是最慢、最贵的一步——这就是低效根源。</p>
+</div>
+</div>
+<h3 id="1.3-解题思路">1.3 解题思路</h3>
+<p>让另一个<strong>固定的</strong>策略 <span class="math math-inline">$\pi_{\theta'}$</span> 去采数据，用这些数据反复更新 <span class="math math-inline">$\theta$</span> 很多步 → 把 on-policy 变成&quot;借数据训练&quot;的形式。
+<strong>关键工具：重要性采样 + KL/clip 约束。</strong></p>
+<hr />
+<h2 id="2.-重要性采样（Importance-Sampling）">2. 重要性采样（Importance Sampling）</h2>
+<h3 id="2.1-推导">2.1 推导</h3>
+<p>要算 <span class="math math-inline">$\mathbb E_{x\sim p}[f(x)]$</span>，但只能从 <span class="math math-inline">$q$</span> 采样：</p>
+<div class="math math-block">
+$$
+\int f(x)\,p(x)\,\mathrm dx
+= \int f(x)\,\frac{p(x)}{q(x)}\,q(x)\,\mathrm dx
+= \mathbb E_{x\sim q}\!\left[f(x)\,\frac{p(x)}{q(x)}\right]
+$$
+</div>
+<p>得到核心等式：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+\mathbb E_{x\sim p}[f(x)] \;=\; \mathbb E_{x\sim q}\!\left[f(x)\,\frac{p(x)}{q(x)}\right]
+\;}\tag{5.3}
+$$
+</div>
+<p>权重 <span class="math math-inline">$\dfrac{p(x)}{q(x)}$</span> 称为<strong>重要性权重 importance weight / ratio</strong>。</p>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">必要条件</span></div>
+  <div class="callout-body"><p><span class="math math-inline">$q(x)=0$</span> 时必须 <span class="math math-inline">$p(x)=0$</span>（否则 <span class="math math-inline">$p/q$</span> 未定义）。即 <span class="math math-inline">$q$</span> 的支撑集要覆盖 <span class="math math-inline">$p$</span>。</p>
+</div>
+</div>
+<h3 id="2.2-期望相等，但方差不等！">2.2 期望相等，但方差不等！</h3>
+<div class="math math-block">
+$$
+\operatorname{Var}_{x\sim p}[f(x)]
+= \mathbb E_{x\sim p}[f(x)^2] - \bigl(\mathbb E_{x\sim p}[f(x)]\bigr)^2
+$$
+</div>
+<div class="math math-block">
+$$
+\operatorname{Var}_{x\sim q}\!\left[f(x)\frac{p(x)}{q(x)}\right]
+= \mathbb E_{x\sim p}\!\left[f(x)^2\, \color{red}{\frac{p(x)}{q(x)}}\right] - \bigl(\mathbb E_{x\sim p}[f(x)]\bigr)^2
+$$
+</div>
+<div class="callout callout-danger" style="border-left-color:#ef4444; background:#ef444414;">
+  <div class="callout-title"><span class="callout-icon">🔥</span><span class="callout-title-text">方差爆炸</span></div>
+  <div class="callout-body"><p>红色项多了一个 <span class="math math-inline">$p/q$</span> 因子。<strong><span class="math math-inline">$p$</span> 和 <span class="math math-inline">$q$</span> 差距越大，方差越爆炸</strong>。采样数不够时，两个估计可能差到面目全非。
+↑ 这就是为什么后面 PPO 一定要把 <span class="math math-inline">$p_\theta$</span> 和 <span class="math math-inline">$p_{\theta'}$</span> 约束得&quot;足够接近&quot;。</p>
+</div>
+</div>
+<hr />
+<h2 id="3.-把重要性采样套进策略梯度">3. 把重要性采样套进策略梯度</h2>
+<h3 id="3.1-轨迹级写法（粗粒度）">3.1 轨迹级写法（粗粒度）</h3>
+<p>把式 (5.1) 的采样源换成 <span class="math math-inline">$\theta'$</span>：</p>
+<div class="math math-block">
+$$
+\nabla \bar R_\theta
+= \mathbb E_{\tau\sim p_{\theta'}(\tau)}\!\left[\frac{p_\theta(\tau)}{p_{\theta'}(\tau)}\,R(\tau)\,\nabla\log p_\theta(\tau)\right]\tag{5.4}
+$$
+</div>
+<p>这一式<strong>合法</strong>但粒度太粗（要算整条轨迹的比值，方差大）。下一步把它拆到 <span class="math math-inline">$(s_t,a_t)$</span> 粒度，方便实操。</p>
+<h3 id="3.2-拆到-state-action-对（实操粒度）">3.2 拆到 state-action 对（实操粒度）</h3>
+<p>策略梯度真正的更新单元是 <span class="math math-inline">$(s_t, a_t)$</span>，配上优势函数。先沿用第 4 章的写法 <span class="math math-inline">$A^\theta(s_t,a_t)$</span>：</p>
+<div class="math math-block">
+$$
+\mathbb E_{(s_t,a_t)\sim\pi_{\theta'}}\!\left[
+\frac{p_\theta(s_t,a_t)}{p_{\theta'}(s_t,a_t)}\,
+A^{\theta}(s_t,a_t)\,
+\nabla\log p_\theta(a_t\mid s_t)\right]
+$$
+</div>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">从 <span class="math math-inline">$A^\theta$</span> 到 <span class="math math-inline">$A^{\theta'}$</span> 的替换</span></div>
+  <div class="callout-body"><p>严格地，优势函数原本是相对<strong>当前策略 <span class="math math-inline">$\theta$</span></strong> 定义的 <span class="math math-inline">$A^\theta$</span>；但实操中<strong>我们用 <span class="math math-inline">$\theta'$</span> 采样的轨迹来估计它</strong>，所以在异策略形式下写作 <span class="math math-inline">$A^{\theta'}$</span>。这两者<strong>不严格相等</strong>——这是 PPO 的一个近似（与 §3.3 的 <span class="math math-inline">$p_\theta(s_t)\approx p_{\theta'}(s_t)$</span> 同性质），但只要 <span class="math math-inline">$\theta$</span> 和 <span class="math math-inline">$\theta'$</span> 足够接近就可接受，KL/clip 约束正是为此服务。
+（从 <span class="math math-inline">$R(\tau)$</span> 到 <span class="math math-inline">$A_t$</span> 的过渡沿用第 4 章降方差技巧：加 baseline + 按时间步分摊回报。）</p>
+</div>
+</div>
+<p>拆联合概率：</p>
+<div class="math math-block">
+$$
+\frac{p_\theta(s_t,a_t)}{p_{\theta'}(s_t,a_t)}
+= \frac{p_\theta(a_t\mid s_t)}{p_{\theta'}(a_t\mid s_t)} \cdot
+  \frac{p_\theta(s_t)}{p_{\theta'}(s_t)}
+$$
+</div>
+<h3 id="3.3-关键假设：">3.3 关键假设：<span class="math math-inline">$p_\theta(s_t) \approx p_{\theta'}(s_t)$</span></h3>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">为什么可以这么近似</span></div>
+  <div class="callout-body"><ol>
+<li><strong>难算</strong>：状态边际分布 <span class="math math-inline">$p_\theta(s_t)$</span> 几乎无法解析计算（尤其图像输入下同一帧几乎不重复）</li>
+<li><strong>影响弱</strong>：环境一致时，不同策略到达某状态的概率相似（如不同 Atari 策略看到的画面分布近似）</li>
+<li><strong>而 <span class="math math-inline">$p_\theta(a_t|s_t)$</span> 易算</strong>：策略网络一前向就有</li>
+</ol>
+</div>
+</div>
+<p>约掉后：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+\nabla J(\theta) \approx
+\mathbb E_{(s_t,a_t)\sim\pi_{\theta'}}\!\left[
+\frac{p_\theta(a_t\mid s_t)}{p_{\theta'}(a_t\mid s_t)}\,
+A^{\theta'}(s_t,a_t)\,
+\nabla\log p_\theta(a_t\mid s_t)\right]
+\;}\tag{5.5}
+$$
+</div>
+<h3 id="3.4-反推目标函数">3.4 反推目标函数</h3>
+<p>用 Log-Derivative Trick 反向 <span class="math math-inline">$\nabla f = f\nabla\log f$</span>（此时 <span class="math math-inline">$p_{\theta'}$</span> 和 <span class="math math-inline">$A^{\theta'}$</span> 对 <span class="math math-inline">$\theta$</span> 是常数）：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+J^{\theta'}(\theta) =
+\mathbb E_{(s_t,a_t)\sim\pi_{\theta'}}\!\left[
+\frac{p_\theta(a_t\mid s_t)}{p_{\theta'}(a_t\mid s_t)}\,
+A^{\theta'}(s_t,a_t)\right]
+\;}
+$$
+</div>
+<ul>
+<li><span class="math math-inline">$\theta$</span>：要优化的参数</li>
+<li><span class="math math-inline">$\theta'$</span>：真正采样的策略参数（每轮迭代后才同步）</li>
+</ul>
+<hr />
+<h2 id="4.-加约束：从-TRPO-到-PPO">4. 加约束：从 TRPO 到 PPO</h2>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">不加约束会怎样</span></div>
+  <div class="callout-body"><p>由 §2.2，若 <span class="math math-inline">$\pi_\theta$</span> 与 <span class="math math-inline">$\pi_{\theta'}$</span> 比值过大，重要性采样的方差爆炸；更新后策略可能跑得很远，性能崩溃。</p>
+</div>
+</div>
+<h3 id="4.1-TRPO（Trust-Region-Policy-Optimization）">4.1 TRPO（Trust Region Policy Optimization）</h3>
+<p><strong>硬约束</strong>写法：</p>
+<div class="math math-block">
+$$
+J_{\text{TRPO}}^{\theta'}(\theta) =
+\mathbb E_{(s_t,a_t)\sim\pi_{\theta'}}\!\left[
+\frac{p_\theta(a_t\mid s_t)}{p_{\theta'}(a_t\mid s_t)}\,
+A^{\theta'}(s_t,a_t)\right],
+\quad \text{s.t. } \mathrm{KL}(\theta,\theta')<\delta
+$$
+</div>
+<div class="callout callout-danger" style="border-left-color:#ef4444; background:#ef444414;">
+  <div class="callout-title"><span class="callout-icon">🔥</span><span class="callout-title-text">TRPO 的痛</span></div>
+  <div class="callout-body"><p>KL 在目标函数<strong>外面</strong>作硬约束 → 梯度优化器很难处理（需要共轭梯度 + 自然梯度 + 线搜索），实现复杂。</p>
+</div>
+</div>
+<h3 id="4.2-PPO：把-KL-挪进目标函数">4.2 PPO：把 KL 挪进目标函数</h3>
+<div class="math math-block">
+$$
+\boxed{\;
+J_{\text{PPO}}^{\theta'}(\theta) =
+J^{\theta'}(\theta) - \beta\,\mathrm{KL}(\theta,\theta')
+\;}\tag{5.6}
+$$
+</div>
+<p>性能与 TRPO 相当，但<strong>可直接梯度上升，实现简单 10 倍</strong>。</p>
+<h3 id="4.3-KL-散度的含义">4.3 KL 散度的含义</h3>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">行为距离，不是参数距离</span></div>
+  <div class="callout-body"><p><span class="math math-inline">$\mathrm{KL}(\theta,\theta')$</span> 衡量的是：<strong>给定相同状态 <span class="math math-inline">$s$</span>，两个策略输出的动作分布的 KL</strong>（对状态求平均）。严格地写应该是：</p>
+<div class="math math-block">
+$$
+\mathrm{KL}(\theta,\theta') \;\triangleq\; \mathbb E_{s\sim\rho^{\pi_{\theta'}}}\!\bigl[\,\mathrm{KL}\bigl(\pi_{\theta'}(\cdot\mid s)\,\big\|\,\pi_\theta(\cdot\mid s)\bigr)\,\bigr]
+$$
+</div>
+<p>注意 KL 是<strong>非对称</strong>的；PPO/TRPO 原论文及主流实现都把<strong>采样策略（旧策略）放在前面</strong>（即 <span class="math math-inline">$\pi_{\theta^k}\|\pi_\theta$</span>），因为期望就是对 <span class="math math-inline">$\pi_{\theta^k}$</span> 采样的状态-动作做的，这样估计无偏。教程后文为简洁仍写 <span class="math math-inline">$\mathrm{KL}(\theta,\theta^k)$</span>，含义就是上式。</p>
+<p><strong>为什么不用参数 L1/L2 距离</strong>：神经网络里参数的微小变化可能引起动作分布巨变（也可能反之），真正关心的是动作行为差异。</p>
+</div>
+</div>
+<h3 id="4.4-PPO-仍然是&quot;同策略&quot;？">4.4 PPO 仍然是&quot;同策略&quot;？</h3>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">名义 vs 实质</span></div>
+  <div class="callout-body"><p>PPO 用了重要性采样的&quot;形式&quot;，<strong>但 <span class="math math-inline">$\theta'$</span> 只用上一轮的策略，KL 又把它锁在 <span class="math math-inline">$\theta$</span> 附近</strong> → 两个策略始终很接近 → 整体被视作 <strong>on-policy 算法</strong>。
+这也是为什么 PPO 不能像 DQN 那样<strong>跨 iteration 复用 buffer</strong> —— 一旦 <span class="math math-inline">$\theta^k$</span> 更新到 <span class="math math-inline">$\theta^{k+1}$</span>，原 buffer 立即失效，必须用新策略重新采样。（DQN 的 replay buffer 能跨 iteration 用是因为它是 off-policy，与采样策略分布无关。）</p>
+</div>
+</div>
+<hr />
+<h2 id="5.-PPO-两大变体">5. PPO 两大变体</h2>
+<h3 id="5.1-PPO-Penalty（PPO1，自适应-KL）">5.1 PPO-Penalty（PPO1，自适应 KL）</h3>
+<p><strong>目标函数</strong>：</p>
+<div class="math math-block">
+$$
+J_{\text{PPO}}^{\theta^k}(\theta) =
+J^{\theta^k}(\theta) - \beta\,\mathrm{KL}(\theta,\theta^k)\tag{5.7}
+$$
+</div>
+<p>其中</p>
+<div class="math math-block">
+$$
+J^{\theta^k}(\theta) \approx
+\sum_{(s_t,a_t)}
+\frac{p_\theta(a_t\mid s_t)}{p_{\theta^k}(a_t\mid s_t)}\,
+A^{\theta^k}(s_t,a_t)
+$$
+</div>
+<p><strong>自适应 <span class="math math-inline">$\beta$</span></strong>：</p>
+<table>
+<thead>
+<tr>
+<th>监测</th>
+<th>调整</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><span class="math math-inline">$\mathrm{KL}(\theta,\theta^k) > \mathrm{KL}_{\max}$</span></td>
+<td><span class="math math-inline">$\beta \uparrow$</span>（罚得不够）</td>
+</tr>
+<tr>
+<td><span class="math math-inline">$\mathrm{KL}(\theta,\theta^k) < \mathrm{KL}_{\min}$</span></td>
+<td><span class="math math-inline">$\beta \downarrow$</span>（罚得太狠）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="5.2-PPO-Clip（PPO2，裁剪比值）——-更主流">5.2 PPO-Clip（PPO2，裁剪比值）—— <strong>更主流</strong></h3>
+<p><strong>目标函数</strong>（<strong>无 KL 项</strong>）：</p>
+<div class="math math-block">
+$$
+\boxed{\;
+J_{\text{PPO2}}^{\theta^k}(\theta) \approx \sum_{(s_t,a_t)}
+\min\!\Bigl(
+r_t(\theta)\,A^{\theta^k}_t,\;
+\operatorname{clip}\!\bigl(r_t(\theta),\,1-\varepsilon,\,1+\varepsilon\bigr)\,A^{\theta^k}_t
+\Bigr)
+\;}\tag{5.8}
+$$
+</div>
+<p>其中</p>
+<div class="math math-block">
+$$
+r_t(\theta) \triangleq \frac{p_\theta(a_t\mid s_t)}{p_{\theta^k}(a_t\mid s_t)},
+\qquad \varepsilon \in \{0.1,\,0.2\}\ \text{常用}
+$$
+</div>
+<h4 id="Clip-的直观逻辑（4-种情况全覆盖）">Clip 的直观逻辑（4 种情况全覆盖）</h4>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">PPO 的精髓在于&quot;不对称&quot;</span></div>
+  <div class="callout-body"><p>表里<strong>有刹车</strong>的两行是大家熟知的&quot;封顶/封底&quot;；但真正让 PPO 区别于朴素 clip 的，是<strong>有刹车</strong>与<strong>无刹车</strong>的方向选择 —— 只在&quot;想往策略外远走&quot;时刹车，在&quot;想拉回正轨&quot;时<strong>完全不限制</strong>。这就是 <span class="math math-inline">$\min$</span> 操作的真正作用。</p>
+</div>
+</div>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>优势 <span class="math math-inline">$A_t$</span></th>
+<th>ratio <span class="math math-inline">$r_t$</span></th>
+<th><span class="math math-inline">$\min(r_t A,\,\text{clip}(r_t)A)$</span></th>
+<th>行为</th>
+<th>直觉</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><span class="math math-inline">$A>0$</span>（好动作）</td>
+<td><span class="math math-inline">$r > 1+\varepsilon$</span></td>
+<td><span class="math math-inline">$(1+\varepsilon)A$</span> <strong>被 clip</strong></td>
+<td>梯度 <span class="math math-inline">$=0$</span>，<strong>封顶</strong></td>
+<td>好动作，但已被推得太狠 → 刹车</td>
+</tr>
+<tr>
+<td>2</td>
+<td><span class="math math-inline">$A>0$</span>（好动作）</td>
+<td><span class="math math-inline">$r < 1-\varepsilon$</span></td>
+<td><span class="math math-inline">$rA$</span> <strong>未 clip</strong></td>
+<td>正常梯度 → 继续 <span class="math math-inline">$\uparrow r$</span></td>
+<td>好动作却被旧策略压低很多 → <strong>加速拉回</strong></td>
+</tr>
+<tr>
+<td>3</td>
+<td><span class="math math-inline">$A<0$</span>（差动作）</td>
+<td><span class="math math-inline">$r < 1-\varepsilon$</span></td>
+<td><span class="math math-inline">$(1-\varepsilon)A$</span> <strong>被 clip</strong></td>
+<td>梯度 <span class="math math-inline">$=0$</span>，<strong>封底</strong></td>
+<td>差动作概率已被压得很低 → 别再压</td>
+</tr>
+<tr>
+<td>4</td>
+<td><span class="math math-inline">$A<0$</span>（差动作）</td>
+<td><span class="math math-inline">$r > 1+\varepsilon$</span></td>
+<td><span class="math math-inline">$rA$</span> <strong>未 clip</strong></td>
+<td>正常梯度 → 继续 <span class="math math-inline">$\downarrow r$</span></td>
+<td>差动作概率反而被推高了 → <strong>使劲拉回</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">为什么用 <span class="math math-inline">$\min$</span> 而不是直接 clip</span></div>
+  <div class="callout-body"><p>注意 #2 与 #4：在&quot;想纠正回正轨&quot;的方向上，<span class="math math-inline">$\min$</span> 选了<strong>未 clip</strong> 的 <span class="math math-inline">$rA$</span> —— 梯度照旧、没有刹车。
+反观 #1 与 #3：在&quot;已经按策略意愿走过头&quot;的方向上，<span class="math math-inline">$\min$</span> 选了 <strong>clip 后</strong>的常数项 —— 梯度归零，停止。
+这种<strong>单边信赖域</strong>比对称的 KL 罚（PPO1）更稳：不阻碍纠错，只防止过冲。</p>
+</div>
+</div>
+<h4 id="一图看懂-clip（损失曲面-vs-）">一图看懂 clip（损失曲面 <span class="math math-inline">$L^{\text{CLIP}}$</span> vs <span class="math math-inline">$r$</span>）</h4>
+<p>参考 Schulman 2017 论文 Figure 1：</p>
+<pre><code>A &gt; 0  (好动作)                          A &lt; 0  (差动作)
+L↑                                       L↑
+              ┌─────────  (封顶)              ───────┐
+             /                                       \
+            /                                         \
+           /                                           \  (无封底)
+          /                                             \
+─────────/───────────→ r              ─────────────────────\─→ r
+   0    1   1+ε                            1-ε    1
+        ↑                                  ↑
+   无封底，左段始终是                       右段始终是
+   线性 r·A (越小 L 越低,                  线性 r·A (越大 L 越低,
+   想拉回时不被限制)                       想拉回时不被限制)
+</code></pre>
+<ul>
+<li><strong><span class="math math-inline">$A>0$</span></strong>：<span class="math math-inline">$L=\min(rA,\,(1+\varepsilon)A)$</span>。<span class="math math-inline">$r\le 1+\varepsilon$</span> 时取 <span class="math math-inline">$rA$</span>（线性上升）；<span class="math math-inline">$r>1+\varepsilon$</span> 时被钳在 <span class="math math-inline">$(1+\varepsilon)A$</span>（<strong>水平封顶</strong>，梯度 0）。<strong>左半部分无封底</strong>——因为情况 #2 不需要刹车。</li>
+<li><strong><span class="math math-inline">$A<0$</span></strong>：<span class="math math-inline">$L=\min(rA,\,(1-\varepsilon)A)$</span>。<span class="math math-inline">$r\ge 1-\varepsilon$</span> 时取 <span class="math math-inline">$rA$</span>（线性下降）；<span class="math math-inline">$r<1-\varepsilon$</span> 时被钳在 <span class="math math-inline">$(1-\varepsilon)A$</span>（<strong>水平封底</strong>，梯度 0）。<strong>右半部分无封顶</strong>——因为情况 #4 不需要刹车。</li>
+</ul>
+<hr />
+<h2 id="6.-PPO-算法流程">6. PPO 算法流程</h2>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">PPO-Clip 伪代码</span></div>
+  <div class="callout-body"><ol>
+<li>初始化策略参数 <span class="math math-inline">$\theta^0$</span>、价值网络 <span class="math math-inline">$V_\phi$</span></li>
+<li><strong>for</strong> iteration <span class="math math-inline">$k = 0, 1, 2, \dots$</span> <strong>do</strong>：
+<ol>
+<li>用 <span class="math math-inline">$\pi_{\theta^k}$</span> 与环境交互，收集一批轨迹 <span class="math math-inline">$\mathcal D_k = \{\tau_i\}$</span></li>
+<li>估计每步优势 <span class="math math-inline">$\hat A_t$</span>（常用 GAE）和回报 <span class="math math-inline">$\hat R_t$</span></li>
+<li><strong>对同一批数据反复迭代 <span class="math math-inline">$K$</span> 个 epoch</strong>（这是 PPO 的关键提速）：
+<ul>
+<li>计算 ratio <span class="math math-inline">$r_t(\theta) = \dfrac{\pi_\theta(a_t\mid s_t)}{\pi_{\theta^k}(a_t\mid s_t)}$</span></li>
+<li>计算 clip 损失（公式 5.8），价值损失 <span class="math math-inline">$(V_\phi(s_t)-\hat R_t)^2$</span>，熵奖励</li>
+<li>SGD/Adam 一步更新 <span class="math math-inline">$\theta,\phi$</span></li>
+<li>（工程常用）若 approx-KL <span class="math math-inline">$> 1.5\cdot \mathrm{KL}_{\text{target}}$</span>，<strong>early stop</strong> 本轮 epoch，防止过冲</li>
+</ul>
+</li>
+<li><span class="math math-inline">$\theta^{k+1}\leftarrow \theta$</span></li>
+</ol>
+</li>
+<li><strong>end for</strong></li>
+</ol>
+</div>
+</div>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">PPO 与 REINFORCE 的根本提效点</span></div>
+  <div class="callout-body"><p>REINFORCE：1 批数据 → <strong>1 次</strong>梯度更新 → 丢弃
+PPO：1 批数据 → <strong><span class="math math-inline">$K$</span> 次</strong>梯度更新（典型 <span class="math math-inline">$K=4\sim10$</span>）→ 丢弃
+在不破坏 on-policy 假设的前提下，把样本利用率提了一个数量级。</p>
+</div>
+</div>
+<hr />
+<h2 id="7.-与原始策略梯度的对比">7. 与原始策略梯度的对比</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>REINFORCE / 朴素 PG</th>
+<th>TRPO</th>
+<th>PPO-Penalty</th>
+<th>PPO-Clip</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>on/off policy</td>
+<td>on</td>
+<td>on</td>
+<td>on（伪 off 形式）</td>
+<td>on（伪 off 形式）</td>
+</tr>
+<tr>
+<td>数据复用</td>
+<td>❌ 1 次</td>
+<td>❌ 1 次</td>
+<td>✅ K 次</td>
+<td>✅ K 次</td>
+</tr>
+<tr>
+<td>约束</td>
+<td>无</td>
+<td>KL 硬约束</td>
+<td>KL 软惩罚（自适应 β）</td>
+<td>ratio clip</td>
+</tr>
+<tr>
+<td>实现复杂度</td>
+<td>⭐</td>
+<td>⭐⭐⭐⭐⭐</td>
+<td>⭐⭐⭐</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td>稳定性</td>
+<td>差</td>
+<td>好</td>
+<td>好</td>
+<td>好</td>
+</tr>
+<tr>
+<td>主流程度</td>
+<td>教学</td>
+<td>历史</td>
+<td>少用</td>
+<td>✅ <strong>OpenAI 默认</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8.-Cheat-Sheet">8. Cheat Sheet</h2>
+<div class="callout callout-checklist" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✅</span><span class="callout-title-text">最小可用 PPO-Clip 伪代码（PyTorch 风格）</span></div>
+  <div class="callout-body"><pre><code class="language-python">for iteration in range(N):
+    # 1. 采样一批数据（用 θ_old）
+    traj = rollout(env, policy_old, T_horizon)
+    adv  = compute_gae(traj.rewards, traj.values, gamma=0.99, lam=0.95)
+    adv  = (adv - adv.mean()) / (adv.std() + 1e-8)   # 归一化
+    ret  = adv + traj.values                          # 价值目标
+
+    # 2. 同一批数据更新 K 个 epoch
+    for _ in range(K_EPOCHS):
+        for mb in minibatches(traj, batch_size=64):
+            ratio = (policy.log_prob(mb.s, mb.a) - mb.old_logp).exp()
+            surr1 = ratio * mb.adv
+            surr2 = ratio.clamp(1 - eps, 1 + eps) * mb.adv
+            loss_pi = -torch.min(surr1, surr2).mean()
+            loss_v  = ((value_net(mb.s) - mb.ret) ** 2).mean()
+            loss_h  = -policy.entropy(mb.s).mean()     # 熵奖励（鼓励探索）
+            loss = loss_pi + 0.5 * loss_v + 0.01 * loss_h
+            optimizer.zero_grad(); loss.backward()
+            nn.utils.clip_grad_norm_(params, 0.5)      # 梯度裁剪
+            optimizer.step()
+
+    # 3. 同步 θ_old ← θ
+    policy_old.load_state_dict(policy.state_dict())
+</code></pre>
+</div>
+</div>
+<div class="callout callout-summary" style="border-left-color:#64748b; background:#64748b14;">
+  <div class="callout-title"><span class="callout-icon">📌</span><span class="callout-title-text">常见坑</span></div>
+  <div class="callout-body"><ul>
+<li><strong>忘记同步 <code>policy_old</code></strong> → ratio 永远是 1，clip 失效</li>
+<li><strong>优势未归一化</strong> → loss 数值不稳，clip 阈值失去意义</li>
+<li><strong>K_EPOCHS 太大</strong> → 后期 <span class="math math-inline">$r$</span> 已被 clip 死，纯空转还可能过拟合这批数据</li>
+<li><strong><span class="math math-inline">$\varepsilon$</span> 选太大</strong>（如 0.5）→ 跟不裁差不多；太小（如 0.01）→ 几乎不更新</li>
+<li><strong>共享网络时 value loss 系数失衡</strong> → 价值损失盖过策略损失</li>
+<li><strong>采样后又调用一次策略算 log_prob 才存</strong> → 必须存 <strong>采样当下</strong> 的 <code>old_logp</code>，否则 ratio 错位</li>
+<li><strong>离散动作忘了用 <code>Categorical.log_prob</code></strong>，自己手算 softmax 容易数值不稳</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="9.-一图总览">9. 一图总览</h2>
+<pre><code class="language-dot">digraph PPO {
+  rankdir=TB; node [shape=box, style=&quot;rounded,filled&quot;, fillcolor=&quot;#f0f4ff&quot;];
+
+  pg     [label=&quot;朴素策略梯度\n𝔼_{π_θ}[A·∇log π_θ]\n(on-policy, 一次性数据)&quot;];
+  pain   [label=&quot;痛点: 数据用一次就丢&quot;];
+  is     [label=&quot;重要性采样 Trick\n𝔼_p[f] = 𝔼_q[f·p/q]&quot;, fillcolor=&quot;#fff4d6&quot;];
+  off    [label=&quot;伪 off-policy 形式\n𝔼_{π_θ&#x27;}[r·A·∇log π_θ]&quot;];
+  var    [label=&quot;新痛点: r 太大 → 方差爆炸&quot;];
+  trpo   [label=&quot;TRPO: KL 硬约束\n(实现复杂)&quot;];
+  ppo_p  [label=&quot;PPO-Penalty\nJ - β·KL\n(自适应 β)&quot;, fillcolor=&quot;#d6ffd6&quot;];
+  ppo_c  [label=&quot;PPO-Clip\nmin(rA, clip(r,1±ε)A)\n(OpenAI 默认)&quot;, fillcolor=&quot;#ffd6d6&quot;];
+
+  pg -&gt; pain -&gt; is -&gt; off -&gt; var;
+  var -&gt; trpo;
+  trpo -&gt; ppo_p;
+  trpo -&gt; ppo_c;
+}
+</code></pre>
+<hr />
+<h2 id="10.-关联笔记">10. 关联笔记</h2>
+<ul>
+<li><span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span> —— PPO 的起点：朴素 PG / REINFORCE / Log-Derivative Trick</li>
+<li><span class="wikilink" data-target="Actor-Critic教程" title="Actor-Critic教程">Actor-Critic</span> —— PPO 用 Critic 估计 <span class="math math-inline">$A^{\theta'}$</span></li>
+<li><span class="wikilink" data-target="GAE" title="GAE">GAE</span> —— Generalized Advantage Estimation，PPO 估优势的标配</li>
+<li><span class="wikilink" data-target="TRPO" title="TRPO">TRPO</span> —— PPO 的前身（KL 硬约束 + 自然梯度）</li>
+<li><span class="wikilink" data-target="SAC" title="SAC">SAC</span> —— 另一类主流（off-policy + 最大熵）</li>
+<li><span class="wikilink" data-target="KL散度" title="KL散度">KL散度</span> —— 行为距离的数学基础</li>
+<li>原文：<a href="https://datawhalechina.github.io/easy-rl/#/chapter5/chapter5" target="_blank" rel="noopener noreferrer">Easy-RL · 第 5 章 PPO</a></li>
+</ul>
+
+</main>
+</body>
+</html>

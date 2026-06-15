@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>深度 Q 网络（DQN）高密度教程</title>
+  <link rel="stylesheet" href="_assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3/lib/viz-standalone.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async function () {
+      // 1. highlight.js — only on blocks that opted in via language-XXX class
+      try {
+        document.querySelectorAll('pre code').forEach(function (block) {
+          if (block.classList.contains('language-dot')) return;
+          if (block.classList.contains('language-mermaid')) return;
+          // Skip auto-detect on un-tagged blocks (e.g. ASCII diagrams) — hljs
+          // mis-classifies short text and recolours it badly.
+          var hasLang = false;
+          for (var i = 0; i < block.classList.length; i++) {
+            if (block.classList[i].indexOf('language-') === 0) { hasLang = true; break; }
+          }
+          if (!hasLang) return;
+          window.hljs && window.hljs.highlightElement(block);
+        });
+      } catch (e) { console.warn('hljs failed', e); }
+
+      // 2. Graphviz: replace <pre><code class="language-dot"> with rendered SVG
+      try {
+        if (window.Viz && typeof window.Viz.instance === 'function') {
+          const vizInstance = await window.Viz.instance();
+          document.querySelectorAll('pre code.language-dot').forEach(function (block) {
+            try {
+              const svg = vizInstance.renderSVGElement(block.textContent);
+              const wrapper = document.createElement('div');
+              wrapper.className = 'graphviz';
+              wrapper.appendChild(svg);
+              block.parentElement.replaceWith(wrapper);
+            } catch (err) {
+              console.error('viz render failed', err);
+              block.parentElement.classList.add('graphviz-error');
+            }
+          });
+        } else {
+          console.warn('viz-js not loaded');
+        }
+      } catch (e) { console.warn('viz init failed', e); }
+
+      // 3. Mermaid
+      try {
+        if (window.mermaid) {
+          window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+          await window.mermaid.run({ querySelector: 'pre.mermaid' });
+        }
+      } catch (e) { console.warn('mermaid failed', e); }
+
+      // 4. KaTeX last so it does not fight hljs/viz
+      try {
+        if (window.renderMathInElement) {
+          window.renderMathInElement(document.body, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$',  right: '$',  display: false }
+            ],
+            throwOnError: false,
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+          });
+        }
+      } catch (e) { console.warn('katex failed', e); }
+    });
+  </script>
+</head>
+<body>
+<header class="meta">
+  <h1 class="doc-title">深度 Q 网络（DQN）高密度教程</h1>
+  <div class="meta-row">
+    <span class="meta-tags"><span class="meta-tag">#强化学习</span><span class="meta-tag">#价值函数</span><span class="meta-tag">#DQN</span><span class="meta-tag">#Q-learning</span><span class="meta-tag">#RL</span></span>
+    <span class="meta-source">来源：<a href="https://datawhalechina.github.io/easy-rl/#/chapter6/chapter6">https://datawhalechina.github.io/easy-rl/#/chapter6/chapter6</a></span>
+    <span class="meta-date">2026-06-14</span>
+  </div>
+</header>
+
+<main class="doc">
+<h1 id="深度-Q-网络（Deep-Q-Network,-DQN）">深度 Q 网络（Deep Q-Network, DQN）</h1>
+<div class="callout callout-abstract" style="border-left-color:#7c3aed; background:#7c3aed14;">
+  <div class="callout-title"><span class="callout-icon">📋</span><span class="callout-title-text">一句话</span></div>
+  <div class="callout-body"><p><strong>DQN</strong> 用神经网络 <span class="math math-inline">$Q_\phi(s,a)$</span> 近似动作价值函数 <span class="math math-inline">$Q_\pi(s,a)$</span>，配合 <strong>目标网络（target network）</strong> 稳定回归目标、<strong>经验回放（experience replay）</strong> 打破样本相关性并复用数据，把 tabular Q-learning 推广到高维/连续状态空间。本质：<strong>TD 回归 + 自举（bootstrapping）+ 两个工程稳定性 trick</strong>。</p>
+</div>
+</div>
+<hr />
+<h2 id="1.-背景：基于价值-vs-基于策略">1. 背景：基于价值 vs 基于策略</h2>
+<p>DQN 不学策略，学<strong>评论员（critic）</strong>。评论员的输出和策略 <span class="math math-inline">$\pi$</span> 绑定——它评的是&quot;在策略 <span class="math math-inline">$\pi$</span> 下，这个状态/动作有多好&quot;。</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>基于价值（DQN）</th>
+<th>基于策略（<span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span>）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>学什么</td>
+<td><span class="math math-inline">$Q_\phi(s,a)$</span>，间接得策略 <span class="math math-inline">$\pi(s)=\arg\max_a Q$</span></td>
+<td>直接学 <span class="math math-inline">$\pi_\theta(a\mid s)$</span></td>
+</tr>
+<tr>
+<td>策略形式</td>
+<td><strong>确定性</strong>（贪心）</td>
+<td><strong>天然随机</strong></td>
+</tr>
+<tr>
+<td>探索</td>
+<td>需要外加机制（<span class="math math-inline">$\varepsilon$</span>-greedy / Boltzmann）</td>
+<td>采样自带</td>
+</tr>
+<tr>
+<td>数据效率</td>
+<td><strong>off-policy</strong>，回放缓冲可复用旧数据</td>
+<td>on-policy，采样数据用一次就丢</td>
+</tr>
+<tr>
+<td>动作空间</td>
+<td>离散友好；连续要变形（DDPG）</td>
+<td>离散 / 连续都行</td>
+</tr>
+<tr>
+<td>收敛性</td>
+<td>函数近似 + 自举 + off-policy = &quot;致命三件套&quot;，需技巧稳定</td>
+<td>局部最优、方差大</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">为什么需要 DQN</span></div>
+  <div class="callout-body"><p>Tabular Q-learning 用表存 <span class="math math-inline">$Q(s,a)$</span>，状态空间一旦大或连续（如雅达利游戏的像素画面）就无法枚举。<strong>价值函数近似（value function approximation）</strong> <span class="math math-inline">$Q_\phi(s,a)\approx Q_\pi(s,a)$</span> 用神经网络替换表格，但天真替换会让训练发散——这就是 DQN 那两个 trick 要解决的。</p>
+</div>
+</div>
+<hr />
+<h2 id="2.-形式化：状态价值与动作价值">2. 形式化：状态价值与动作价值</h2>
+<h3 id="2.1-状态价值函数">2.1 状态价值函数 <span class="math math-inline">$V_\pi(s)$</span></h3>
+<div class="math math-block">
+$$
+V_\pi(s) = \mathbb{E}\left[\sum_{k=0}^{\infty} \gamma^k r_{t+k}\,\Big|\, s_t = s, \pi\right]
+$$
+</div>
+<p>含义：在状态 <span class="math math-inline">$s$</span> 下，依策略 <span class="math math-inline">$\pi$</span> 一直交互到结束的<strong>期望累积奖励</strong>。</p>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">价值绑定演员</span></div>
+  <div class="callout-body"><p><span class="math math-inline">$V_\pi$</span> 是 <span class="math math-inline">$\pi$</span> 的函数。同一个状态，换个策略，值就变。评论员<strong>不能</strong>离开演员单独评价&quot;状态好坏&quot;。</p>
+</div>
+</div>
+<h3 id="2.2-动作价值函数">2.2 动作价值函数 <span class="math math-inline">$Q_\pi(s,a)$</span></h3>
+<div class="math math-block">
+$$
+Q_\pi(s,a) = \mathbb{E}\left[\sum_{k=0}^{\infty} \gamma^k r_{t+k}\,\Big|\, s_t = s, a_t = a, \pi\right]
+$$
+</div>
+<p><strong>强制</strong>在 <span class="math math-inline">$s$</span> 采取动作 <span class="math math-inline">$a$</span>（不管 <span class="math math-inline">$\pi$</span> 本来要选啥），之后才回到 <span class="math math-inline">$\pi$</span>。两种网络结构：</p>
+<table>
+<thead>
+<tr>
+<th>结构</th>
+<th>输入</th>
+<th>输出</th>
+<th>适用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>(a)</td>
+<td><span class="math math-inline">$(s, a)$</span></td>
+<td>标量</td>
+<td>离散 + <strong>连续动作</strong></td>
+</tr>
+<tr>
+<td>(b)</td>
+<td><span class="math math-inline">$s$</span></td>
+<td>每个动作一个 Q 值（向量）</td>
+<td><strong>仅离散</strong>；DQN 标准用法</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">DQN 用的是 (b)</span></div>
+  <div class="callout-body"><p>一次前向给所有动作的 Q 值，<span class="math math-inline">$\arg\max$</span> 直接在输出向量上做，省下对每个动作分别 forward 的开销。<strong>连续动作下不能枚举，反向只能用 (a)</strong> —— 但 (a) 也无法解析 <span class="math math-inline">$\arg\max_a Q$</span>，所以连续控制走 <span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span> 那条&quot;actor 近似 argmax&quot;的路。</p>
+</div>
+</div>
+<hr />
+<h2 id="3.-估值方法：MC-vs-TD（DQN-选-TD）">3. 估值方法：MC vs TD（DQN 选 TD）</h2>
+<p>怎么训练 <span class="math math-inline">$V_\pi$</span> / <span class="math math-inline">$Q_\pi$</span>？两种思路：</p>
+<h3 id="3.1-蒙特卡洛（Monte-Carlo,-MC）">3.1 蒙特卡洛（Monte Carlo, MC）</h3>
+<p>玩到回合结束，记下 <span class="math math-inline">$G_t = \sum_{k=t}^{T} r_k$</span>，回归：</p>
+<div class="math math-block">
+$$
+\mathcal L_{\text{MC}} = \big(V_\phi(s_t) - G_t\big)^2
+$$
+</div>
+<h3 id="3.2-时序差分（Temporal-Difference,-TD）">3.2 时序差分（Temporal Difference, TD）</h3>
+<p>只需一步 <span class="math math-inline">$(s_t, a_t, r_t, s_{t+1})$</span>，用<strong>自举</strong>：</p>
+<div class="math math-block">
+$$
+\boxed{\;V_\pi(s_t) \;=\; r_t + \gamma\, V_\pi(s_{t+1})\;} \tag{6.1*}
+$$
+</div>
+<p>回归损失：</p>
+<div class="math math-block">
+$$
+\mathcal L_{\text{TD}} = \big(V_\phi(s_t) - (r_t + \gamma V_\phi(s_{t+1}))\big)^2
+$$
+</div>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">与原文的细微差异</span></div>
+  <div class="callout-body"><p>Easy-RL 原文式 (6.1) 写作 <span class="math math-inline">$V_\pi(s_t)=V_\pi(s_{t+1})+r_t$</span>（<strong>省去了折扣 <span class="math math-inline">$\gamma$</span></strong>，整章没出现 <span class="math math-inline">$\gamma$</span>）。本教程按 Sutton &amp; Barto 标准，统一加上 <span class="math math-inline">$\gamma\in(0,1]$</span> 以反映&quot;未来奖励要打折&quot;的事实——故标 (6.1*)。后文 <span class="math math-inline">$V_\pi/Q_\pi$</span> 定义、策略改进证明都做了同样处理。</p>
+</div>
+</div>
+<h3 id="3.3-对比">3.3 对比</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>MC</th>
+<th>TD</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>是否需打完整回合</td>
+<td>✅ 必须</td>
+<td>❌ 一步即可</td>
+</tr>
+<tr>
+<td>偏差</td>
+<td>无偏</td>
+<td>有偏（依赖当前 <span class="math math-inline">$V$</span> 估计）</td>
+</tr>
+<tr>
+<td>方差</td>
+<td><strong>大</strong>（<span class="math math-inline">$T$</span> 步奖励之和，方差随回合长度线性以上增长）</td>
+<td><strong>小</strong>（仅一步 <span class="math math-inline">$r$</span> 的随机性）</td>
+</tr>
+<tr>
+<td>长回合</td>
+<td>不可行</td>
+<td>可行</td>
+</tr>
+<tr>
+<td>实践</td>
+<td>较少用</td>
+<td><strong>DQN 用此</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">为什么 TD 能&quot;一步学&quot;</span></div>
+  <div class="callout-body"><p>自举：把&quot;未来无限步求和&quot;折叠成&quot;一步奖励 + 下一状态价值&quot;。代价是&quot;下一状态价值&quot;还是估计的——如果它不准，TD 也不准。</p>
+</div>
+</div>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">MC 与 TD 给出不同答案的经典例子</span></div>
+  <div class="callout-body"><p>8 条轨迹：<span class="math math-inline">$s_a$</span> 出现 1 次（之后接 <span class="math math-inline">$s_b$</span>，<span class="math math-inline">$r=0$</span>，最终回报 0）；<span class="math math-inline">$s_b$</span> 出现 8 次（6 次得 1，2 次得 0）。</p>
+<ul>
+<li>MC：<span class="math math-inline">$V(s_a)=0$</span>（<span class="math math-inline">$s_a$</span> 唯一一次的 return 就是 0）</li>
+<li>TD：<span class="math math-inline">$V(s_a)=V(s_b)+r=3/4+0=3/4$</span></li>
+</ul>
+<p><strong>两者都对，差别在「是否做马尔可夫假设」</strong>：</p>
+<ul>
+<li><strong>MC 不做马尔可夫假设</strong>——它只看实际轨迹的回报，所以忠实保留&quot;<span class="math math-inline">$s_a$</span> 出现那次后续就是 0&quot;这条事实，把它当作 <span class="math math-inline">$s_a$</span> 的特殊属性。</li>
+<li><strong>TD 强制马尔可夫性</strong>——它假设 <span class="math math-inline">$s_b$</span> 的价值只取决于 <span class="math math-inline">$s_b$</span> 本身、与如何到达 <span class="math math-inline">$s_b$</span> 无关，所以把通用估计 <span class="math math-inline">$V(s_b)=3/4$</span> 直接接上，得到 <span class="math math-inline">$V(s_a)=3/4$</span>。</li>
+</ul>
+<p>这是 MC vs TD 最根本的方法论分歧，不是某一方更对。</p>
+</div>
+</div>
+<hr />
+<h2 id="4.-策略改进定理：有-Q-就能改策略">4. 策略改进定理：有 Q 就能改策略</h2>
+<p>只要有 <span class="math math-inline">$Q_\pi$</span>，就能造出一个<strong>至少和 <span class="math math-inline">$\pi$</span> 一样好</strong>（且通常更好，除非 <span class="math math-inline">$\pi$</span> 已最优）的新策略：</p>
+<div class="math math-block">
+$$
+\boxed{\;\pi'(s) = \arg\max_a Q_\pi(s,a)\;} \tag{6.4}
+$$
+</div>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">关键性质</span></div>
+  <div class="callout-body"><p>对所有状态 <span class="math math-inline">$s$</span>，<span class="math math-inline">$V_{\pi'}(s) \geq V_\pi(s)$</span>（<strong>非严格</strong> ≥；当 <span class="math math-inline">$\pi$</span> 已是最优策略时取等——这正是最优策略的不动点性质）。这给了一个 <strong>policy iteration</strong> 闭环：估 <span class="math math-inline">$Q_\pi$</span> → 贪心得到 <span class="math math-inline">$\pi'$</span> → 用 <span class="math math-inline">$\pi'$</span> 重新估 <span class="math math-inline">$Q_{\pi'}$</span> → 再贪心 → ...</p>
+</div>
+</div>
+<h3 id="Step-1-·-单步改进">Step 1 · 单步改进</h3>
+<div class="math math-block">
+$$
+V_\pi(s) = Q_\pi(s, \pi(s)) \le \max_a Q_\pi(s,a) = Q_\pi(s, \pi'(s))
+$$
+</div>
+<p>第一个等号是 <span class="math math-inline">$V$</span> 的定义；中间不等号是因为 <span class="math math-inline">$\pi'$</span> 选的就是 <span class="math math-inline">$\arg\max$</span>。</p>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">这一步在说什么</span></div>
+  <div class="callout-body"><p>&quot;在状态 <span class="math math-inline">$s$</span> 偏一步用 <span class="math math-inline">$\pi'$</span>，之后回到 <span class="math math-inline">$\pi$</span>&quot;——这样比从头到尾用 <span class="math math-inline">$\pi$</span> 不会更差。</p>
+</div>
+</div>
+<h3 id="Step-2-·-递归展开（用-Bellman-+-重复-Step-1）">Step 2 · 递归展开（用 Bellman + 重复 Step 1）</h3>
+<p>把 <span class="math math-inline">$Q_\pi(s,\pi'(s))$</span> 用 Bellman 展开成 <span class="math math-inline">$\mathbb E[r_t + \gamma V_\pi(s_{t+1})\mid \cdot]$</span>，对 <span class="math math-inline">$V_\pi(s_{t+1})$</span> 再用 Step 1 不等式，无限展开下去：</p>
+<div class="math math-block">
+$$
+\begin{aligned}
+V_\pi(s)
+&\le \mathbb E[r_t + \gamma V_\pi(s_{t+1})\mid \pi'] \\
+&\le \mathbb E[r_t + \gamma r_{t+1} + \gamma^2 V_\pi(s_{t+2})\mid \pi'] \\
+&\le \cdots \\
+&\le \mathbb E\!\left[\sum_{k=0}^{\infty}\gamma^k r_{t+k}\,\Big|\,\pi'\right] = V_{\pi'}(s)
+\end{aligned}
+$$
+</div>
+<p>所以 <span class="math math-inline">$\boxed{V_\pi(s) \le V_{\pi'}(s)}$</span>。<span class="math math-inline">$\square$</span></p>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">与原文的差异</span></div>
+  <div class="callout-body"><p>Easy-RL 原文证明链未带 <span class="math math-inline">$\gamma$</span>，本教程补全以保持折扣回报定义的一致性。</p>
+</div>
+</div>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">离散 vs 连续动作</span></div>
+  <div class="callout-body"><p><span class="math math-inline">$\arg\max_a$</span> 在离散动作下直接遍历就行；连续动作下 <span class="math math-inline">$\arg\max$</span> 不可解析——这就是 DQN 不能直接用于连续控制（需要 <span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span> 这类带 actor 的变体）的根因。</p>
+</div>
+</div>
+<hr />
+<h2 id="5.-直观解读">5. 直观解读</h2>
+<h3 id="5.1-Q-函数-=-&quot;试一下这步&quot;的预期分">5.1 Q 函数 = &quot;试一下这步&quot;的预期分</h3>
+<p>乒乓球例子：第 2 帧球已经接近边缘，&quot;向上&quot;的 Q 值会显著高于&quot;原地不动&quot;或&quot;向下&quot;——因为只有&quot;向上&quot;能接到球。<strong>Q 值差异在&quot;关键时刻&quot;才显著</strong>，在大多数无关紧要的帧上各动作 Q 值差不多。</p>
+<h3 id="5.2-自举的&quot;先有鸡先有蛋&quot;">5.2 自举的&quot;先有鸡先有蛋&quot;</h3>
+<p>TD 目标 <span class="math math-inline">$r + \gamma Q(s', a')$</span> 用的是<strong>自己估计的 Q</strong>——估计还没准就拿来作目标，听起来要崩。它能 work 是因为：</p>
+<ul>
+<li>真实奖励 <span class="math math-inline">$r$</span> 是<strong>锚点</strong>（数据中的真值）</li>
+<li>多步迭代下，<span class="math math-inline">$r$</span> 信号沿时间反向传播，逐渐校准 Q</li>
+</ul>
+<p>但这个&quot;自我引用&quot;也是 DQN 不稳定的根源——见下一节的 target network。</p>
+<hr />
+<h2 id="6.-实现技巧（DQN-的三大支柱）">6. 实现技巧（DQN 的三大支柱）</h2>
+<h3 id="技巧-1-·-目标网络（Target-Network）">技巧 1 · 目标网络（Target Network）</h3>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">naive 做法的痛点</span></div>
+  <div class="callout-body"><p>直接用单网络回归：损失 <span class="math math-inline">$\big(Q_\phi(s,a) - (r + \gamma\max_{a'} Q_\phi(s',a'))\big)^2$</span>。问题：<strong>目标里也含 <span class="math math-inline">$\phi$</span></strong>，反向传播一次，输出和目标同时动——拟合一个会动的目标，训练极易发散。</p>
+</div>
+</div>
+<p><strong>解法</strong>：复制一份网络作为<strong>目标网络</strong> <span class="math math-inline">$Q_{\hat\phi}$</span>，每 <span class="math math-inline">$C$</span> 步（典型 <span class="math math-inline">$C=100\sim10000$</span>）才同步参数 <span class="math math-inline">$\hat\phi \leftarrow \phi$</span>。回归目标变成：</p>
+<div class="math math-block">
+$$
+\boxed{\; y = r_t + \gamma\, \max_{a'} Q_{\hat\phi}(s_{t+1}, a')\;}
+$$
+</div>
+<p><span class="math math-inline">$\hat\phi$</span> 在 <span class="math math-inline">$C$</span> 步内<strong>冻结</strong>，目标值不动，回归问题良定义。</p>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">猫追老鼠类比</span></div>
+  <div class="callout-body"><p>猫 = <span class="math math-inline">$Q_\phi$</span>（在更新），老鼠 = 目标。如果老鼠也跟着每步动，两者会在优化空间里乱跑。固定老鼠 <span class="math math-inline">$C$</span> 步，让猫追上一段距离再让老鼠动，最终拟合。</p>
+<p>注意：每 <span class="math math-inline">$C$</span> 步的同步是 <strong>硬拷贝</strong>（<span class="math math-inline">$\hat\phi\leftarrow\phi$</span>，老鼠<strong>瞬移</strong>到猫的位置），<strong>不是</strong>软更新（Polyak averaging <span class="math math-inline">$\hat\phi\leftarrow\tau\phi+(1-\tau)\hat\phi$</span>，那是 <span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span> / <span class="wikilink" data-target="SAC" title="SAC">SAC</span> 的做法）。</p>
+</div>
+</div>
+<h3 id="技巧-2-·-经验回放（Experience-Replay）">技巧 2 · 经验回放（Experience Replay）</h3>
+<p>每步把 <span class="math math-inline">$(s_t, a_t, r_t, s_{t+1})$</span> 存入<strong>回放缓冲区</strong> <span class="math math-inline">$\mathcal D$</span>（玩具任务 <span class="math math-inline">$10^4\sim 5\times 10^4$</span>，Atari 经典 <span class="math math-inline">$10^6$</span>），训练时从中<strong>均匀随机采样</strong> mini-batch。</p>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">naive 做法的痛点</span></div>
+  <div class="callout-body"><p>用最新轨迹连续训练：</p>
+<ol>
+<li>相邻样本时间相关，违反 SGD 的 i.i.d. 假设</li>
+<li>与环境交互比训练慢得多——一笔数据用一次就扔太奢侈</li>
+<li>一个 batch 全是相似数据，训练不稳定</li>
+</ol>
+</div>
+</div>
+<p><strong>解法</strong>带来三个好处：</p>
+<table>
+<thead>
+<tr>
+<th>好处</th>
+<th>解释</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>解相关</strong></td>
+<td>随机采样打破时间相关性</td>
+</tr>
+<tr>
+<td><strong>数据复用</strong></td>
+<td>一笔经验可被多次采样训练，缓解&quot;环境交互瓶颈&quot;</td>
+</tr>
+<tr>
+<td><strong>多样性</strong></td>
+<td>缓冲区里混着多个旧策略产生的数据，batch 更 diverse</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">副作用：DQN 是 <strong>off-policy</strong></span></div>
+  <div class="callout-body"><p>缓冲区里的数据不是来自当前 <span class="math math-inline">$\pi$</span> 的，是过去多个策略的混合。Q-learning 本身就是 off-policy（更新只用 <span class="math math-inline">$\max_{a'} Q$</span>，与采样策略无关），所以这个混杂没问题。</p>
+</div>
+</div>
+<h3 id="技巧-3-·-探索（-greedy-/-Boltzmann）">技巧 3 · 探索（<span class="math math-inline">$\varepsilon$</span>-greedy / Boltzmann）</h3>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">naive 做法的痛点</span></div>
+  <div class="callout-body"><p>纯贪心 <span class="math math-inline">$a=\arg\max_a Q(s,a)$</span> 一旦某个动作早期偶然得正奖励，Q 值就最大，之后只选它，<strong>其他动作永远没机会被试</strong>——错把局部最优当全局最优。&quot;以后每次去餐厅只点椒麻鸡&quot;问题。</p>
+</div>
+</div>
+<h4 id="-greedy"><span class="math math-inline">$\varepsilon$</span>-greedy</h4>
+<div class="math math-block">
+$$
+a = \begin{cases} \arg\max_a Q(s,a), & \text{w.p. } 1-\varepsilon \\ \text{均匀随机}, & \text{w.p. } \varepsilon \end{cases}
+$$
+</div>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text"><span class="math math-inline">$\varepsilon$</span> 退火</span></div>
+  <div class="callout-body"><p>训练初期 <span class="math math-inline">$\varepsilon\approx 1$</span>（多探索），按线性或指数退火到 <span class="math math-inline">$0.05\sim 0.1$</span>（多利用）。Atari 经典设置：100 万步从 1.0 退到 0.1。</p>
+</div>
+</div>
+<h4 id="Boltzmann-探索（softmax）">Boltzmann 探索（softmax）</h4>
+<div class="math math-block">
+$$
+\pi(a\mid s) = \frac{e^{Q(s,a)/T}}{\sum_{a'} e^{Q(s,a')/T}}
+$$
+</div>
+<p>温度 <span class="math math-inline">$T$</span>：大 → 接近均匀（探索）；小 → 接近 <span class="math math-inline">$\arg\max$</span>（利用）；<span class="math math-inline">$T\to 0$</span> → 纯贪心。</p>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">关于 <span class="math math-inline">$Q\ge 0$</span> 假设</span></div>
+  <div class="callout-body"><p>Easy-RL 原文额外假设 <span class="math math-inline">$Q(s,a)\ge 0$</span>。其实 softmax 对负数也有定义（指数函数定义在整个实数轴上），实践中<strong>不需要</strong>这个约束。</p>
+</div>
+</div>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th><span class="math math-inline">$\varepsilon$</span>-greedy</th>
+<th>Boltzmann</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>实现</td>
+<td>极简</td>
+<td>要算 softmax</td>
+</tr>
+<tr>
+<td>利用信息</td>
+<td>探索时<strong>完全均匀</strong>（忽略 Q 值差异）</td>
+<td>探索概率与 Q 值挂钩，更&quot;聪明&quot;</td>
+</tr>
+<tr>
+<td>实际使用</td>
+<td>DQN 主流</td>
+<td>Atari 上不如前者，soft Q-learning 用之</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7.-完整-DQN-算法">7. 完整 DQN 算法</h2>
+<div class="callout callout-example" style="border-left-color:#6366f1; background:#6366f114;">
+  <div class="callout-title"><span class="callout-icon">🔬</span><span class="callout-title-text">DQN 伪代码</span></div>
+  <div class="callout-body"><pre><code>初始化 Q 网络参数 φ；目标网络 φ̂ ← φ
+初始化回放缓冲区 D（容量 N）
+
+for episode = 1, M do
+  s ← env.reset()
+  for t = 1, T do
+    # —— 与环境交互 ——
+    根据 ε-greedy 选 a：
+      概率 ε：随机；否则 a = argmax_a Q_φ(s, a)
+    执行 a，得 (r, s&#x27;)
+    存 (s, a, r, s&#x27;) 入 D；若 D 满则丢最旧
+
+    # —— 更新 Q 网络 ——
+    从 D 采样 batch (s_i, a_i, r_i, s&#x27;_i)
+    y_i = r_i + γ · max_{a&#x27;} Q_φ̂(s&#x27;_i, a&#x27;)          # 用目标网络算 y
+    loss = (1/B) Σ (Q_φ(s_i, a_i) - y_i)²            # MSE
+    φ ← φ - η · ∇_φ loss
+
+    # —— 同步目标网络 ——
+    每 C 步：φ̂ ← φ
+
+    s ← s&#x27;
+  end
+end
+</code></pre>
+</div>
+</div>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">与 Q-learning 的区别</span></div>
+  <div class="callout-body"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Q-learning</th>
+<th>DQN</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>价值表示</td>
+<td>表格 <span class="math math-inline">$Q(s,a)$</span></td>
+<td>神经网络 <span class="math math-inline">$Q_\phi(s,a)$</span></td>
+</tr>
+<tr>
+<td>数据</td>
+<td>用最新转移直接更新（stream learning）</td>
+<td><strong>回放缓冲 + 随机批 SGD</strong></td>
+</tr>
+<tr>
+<td>目标稳定</td>
+<td>不需要（tabular Q-learning 是 Bellman 算子的 <span class="math math-inline">$\gamma$</span>-收缩不动点迭代，理论保证收敛）</td>
+<td><strong>目标网络冻结 <span class="math math-inline">$C$</span> 步</strong>（NN 近似破坏了收缩性）</td>
+</tr>
+<tr>
+<td>适用状态</td>
+<td>小且离散</td>
+<td>高维/连续</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<hr />
+<h2 id="8.-Cheat-Sheet">8. Cheat Sheet</h2>
+<h3 id="8.1-最小可跑伪代码（PyTorch）">8.1 最小可跑伪代码（PyTorch）</h3>
+<pre><code class="language-python">import torch, torch.nn as nn, random, numpy as np
+from collections import deque
+
+class QNet(nn.Module):
+    def __init__(self, state_dim, n_actions):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, 128), nn.ReLU(),
+            nn.Linear(128, n_actions))
+    def forward(self, s): return self.net(s)
+
+q, q_target = QNet(s_dim, n_a), QNet(s_dim, n_a)
+q_target.load_state_dict(q.state_dict())
+opt = torch.optim.Adam(q.parameters(), lr=1e-3)
+buf = deque(maxlen=50_000)
+
+for step in range(total_steps):
+    # ε-greedy
+    s_t = torch.tensor(s, dtype=torch.float32)
+    a = env.action_space.sample() if random.random() &lt; eps \
+        else q(s_t).argmax().item()
+    s2, r, done, _ = env.step(a)
+    buf.append((s, a, r, s2, done))
+    s = env.reset() if done else s2
+
+    # 学习
+    if len(buf) &gt;= 1000:
+        batch = random.sample(buf, 64)
+        s_b, a_b, r_b, s2_b, d_b = zip(*batch)
+        # —— dtype 必须显式指定，否则 gather 会报错 ——
+        S  = torch.tensor(np.array(s_b),  dtype=torch.float32)
+        S2 = torch.tensor(np.array(s2_b), dtype=torch.float32)
+        A  = torch.tensor(a_b, dtype=torch.long)      # gather 的 index 必须是 long
+        R  = torch.tensor(r_b, dtype=torch.float32)
+        D  = torch.tensor(d_b, dtype=torch.float32)
+
+        with torch.no_grad():
+            # .max(1).values 等价于 .max(1)[0]，老版 PyTorch 用后者
+            y = R + 0.99 * q_target(S2).max(1).values * (1 - D)  # 终止状态不加未来奖励
+        q_sa = q(S).gather(1, A.unsqueeze(1)).squeeze(1)         # (B, n_a) → (B,)
+        loss = ((q_sa - y) ** 2).mean()
+        opt.zero_grad(); loss.backward(); opt.step()
+
+    # 同步目标网络（硬拷贝）
+    if step % 100 == 0:
+        q_target.load_state_dict(q.state_dict())
+</code></pre>
+<h3 id="8.2-常见坑">8.2 常见坑</h3>
+<div class="callout callout-summary" style="border-left-color:#64748b; background:#64748b14;">
+  <div class="callout-title"><span class="callout-icon">📌</span><span class="callout-title-text">提交前自查</span></div>
+  <div class="callout-body"><ul>
+<li><strong>目标网络忘记 detach / no_grad</strong>：梯度会流回目标网，等于没固定目标 → 发散</li>
+<li><strong>同 Q 网络当目标</strong>：忘了拷一份网络，训练崩</li>
+<li><strong><code>done=True</code> 时仍加 <span class="math math-inline">$\gamma\max Q(s')$</span></strong>：终止状态后没未来奖励，必须乘 <span class="math math-inline">$(1-d)$</span></li>
+<li><strong>gather 维度错</strong>：<code>q(S).gather(1, A.unsqueeze(1))</code>——A 要 unsqueeze 成 <span class="math math-inline">$(B,1)$</span>，否则 shape 错位</li>
+<li><strong>dtype 没指定</strong>：状态要 <code>float32</code>、动作索引要 <code>long</code>，否则 <code>gather</code> 直接报错</li>
+<li><strong>回放缓冲容量分层</strong>：玩具任务（CartPole）<span class="math math-inline">$10^4\sim 5\times 10^4$</span>；Atari 经典 <span class="math math-inline">$10^6$</span></li>
+<li><strong>更新频率失衡</strong>：每步交互→每步训练，Atari 经典是每 4 步训一次</li>
+<li><strong>ε 退火太快</strong>：还没探索充分就纯贪心，卡在次优策略；评估时 ε 通常设 0.05（避免训练 ε 影响 evaluation）</li>
+<li><strong>学习率过大</strong>：DQN 对 lr 敏感，Adam 1e-4 ~ 1e-3 是安全区</li>
+<li><strong>奖励未裁剪</strong>：Atari 经典做法是 <span class="math math-inline">$r\in[-1,1]$</span> 裁剪，避免不同游戏分数尺度差异</li>
+<li><strong>状态归一化</strong>：图像除 255、向量做 mean/std 标准化</li>
+<li><strong>过估计偏差</strong>：<span class="math math-inline">$\max_{a'}$</span> 让 Q 系统性偏高 → <span class="wikilink" data-target="Double DQN" title="Double DQN">Double DQN</span> 解决</li>
+<li><strong>致命三件套</strong>：函数近似 + 自举 + off-policy（Sutton &amp; Barto 第 11 章）。<strong>target network + replay 缓解前两件</strong>；ε-greedy 解决探索-利用问题，<strong>与三件套无关</strong>——三个 trick 各管各的事。</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="9.-一图总览">9. 一图总览</h2>
+<pre><code class="language-dot">digraph DQN {
+  rankdir=TB;
+  node [shape=box, style=&quot;rounded,filled&quot;, fontname=&quot;Helvetica&quot;];
+
+  目标 [label=&quot;目标：学 π* 最大化期望回报&quot;, fillcolor=&quot;#f0f4ff&quot;];
+  Vfunc [label=&quot;状态价值 V_π(s)\n= E[Σγ^k r_k | s, π]&quot;, fillcolor=&quot;#f0f4ff&quot;];
+  Qfunc [label=&quot;动作价值 Q_π(s,a)\n强制在 s 选 a, 之后跟 π&quot;, fillcolor=&quot;#f0f4ff&quot;];
+
+  TD [label=&quot;TD 自举\nV_π(s_t) = r_t + γ V_π(s_{t+1})&quot;, fillcolor=&quot;#fff4d6&quot;];
+  PI [label=&quot;策略改进定理\nπ&#x27;(s) = argmax_a Q_π(s,a)\n⟹ V_π&#x27; ≥ V_π&quot;, fillcolor=&quot;#fff4d6&quot;];
+
+  Tab [label=&quot;Tabular Q-learning\n表格存 Q(s,a)&quot;];
+  VFA [label=&quot;价值函数近似\nQ_φ(s,a) ≈ Q_π(s,a)\n（神经网络替换表格）&quot;];
+
+  Naive [label=&quot;天真 NN-Q：函数近似 + 自举 + off-policy\n训练发散（致命三件套）&quot;, fillcolor=&quot;#ffd6d6&quot;];
+
+  T1 [label=&quot;技巧 1: 目标网络\nφ̂ 冻结 C 步\ny = r + γ max_a Q_φ̂(s&#x27;, a)&quot;, fillcolor=&quot;#d6ffd6&quot;];
+  T2 [label=&quot;技巧 2: 经验回放\n缓冲区 + 随机 mini-batch\n解相关 + 复用 + 多样性&quot;, fillcolor=&quot;#d6ffd6&quot;];
+  T3 [label=&quot;技巧 3: ε-greedy / Boltzmann\n避免贪心陷入次优&quot;, fillcolor=&quot;#d6ffd6&quot;];
+
+  DQN [label=&quot;DQN\n= NN Q + 目标网络 + 经验回放 + ε-greedy&quot;, fillcolor=&quot;#ffd6d6&quot;, penwidth=2];
+
+  目标 -&gt; Vfunc -&gt; Qfunc;
+  Qfunc -&gt; TD;
+  Qfunc -&gt; PI;
+  TD -&gt; Tab; PI -&gt; Tab;
+  Tab -&gt; VFA [label=&quot;状态空间太大&quot;, fontname=&quot;Helvetica&quot;];
+  VFA -&gt; Naive;
+  Naive -&gt; T1; Naive -&gt; T2; Naive -&gt; T3;
+  T1 -&gt; DQN; T2 -&gt; DQN; T3 -&gt; DQN;
+}
+</code></pre>
+<hr />
+<h2 id="10.-关联笔记">10. 关联笔记</h2>
+<ul>
+<li><span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span>：基于策略的对偶路线（actor 而非 critic）</li>
+<li><span class="wikilink" data-target="Q-learning" title="Q-learning">Q-learning</span>：DQN 的 tabular 前身</li>
+<li><span class="wikilink" data-target="Double DQN" title="Double DQN">Double DQN</span>：用 <span class="math math-inline">$\arg\max$</span> 来自在线网，<span class="math math-inline">$\max$</span> 值来自目标网，缓解过估计</li>
+<li><span class="wikilink" data-target="Dueling DQN" title="Dueling DQN">Dueling DQN</span>：Q 网络拆成 <span class="math math-inline">$V(s) + A(s,a)$</span> 两支，提升对状态价值的学习效率</li>
+<li><span class="wikilink" data-target="Prioritized Experience Replay" title="Prioritized Experience Replay">Prioritized Experience Replay</span>：按 TD-error 优先采样</li>
+<li><span class="wikilink" data-target="Rainbow" title="Rainbow">Rainbow</span>：Double + Dueling + PER + n-step + Noisy + Distributional 六合一</li>
+<li><span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span>：把 DQN 思想搬到连续动作（学一个确定性 actor <span class="math math-inline">$\mu_\theta(s)$</span> <strong>近似</strong> <span class="math math-inline">$\arg\max_a Q$</span>，而非解析求解）</li>
+<li><span class="wikilink" data-target="Actor-Critic教程" title="Actor-Critic教程">Actor-Critic</span>：value-based 和 policy-based 的融合</li>
+</ul>
+<p><strong>原文</strong>：<a href="https://datawhalechina.github.io/easy-rl/#/chapter6/chapter6" target="_blank" rel="noopener noreferrer">Easy-RL · Chapter 6 深度Q网络</a></p>
+
+</main>
+</body>
+</html>

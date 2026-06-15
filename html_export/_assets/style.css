@@ -1,0 +1,314 @@
+/* ============================================================
+   RL Tutorial — A4 print-friendly stylesheet
+   ============================================================ */
+:root {
+  --fg: #1f2328;
+  --fg-soft: #57606a;
+  --bg: #ffffff;
+  --bg-soft: #f8fafc;
+  --border: #d0d7de;
+  --border-soft: #e1e4e8;
+  --code-bg: #f6f8fa;
+  --inline-code-bg: #eef0f2;
+  --link: #0969da;
+  --accent: #6366f1;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-soft);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Helvetica Neue", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
+  font-size: 16px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 32px 28px 64px;
+  background: var(--bg);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+}
+
+main.doc {
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Header / metadata ---------- */
+header.meta {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 14px;
+  margin-bottom: 24px;
+}
+header.meta h1.doc-title {
+  font-size: 1.85em;
+  margin: 0 0 10px 0;
+  line-height: 1.25;
+  color: #111;
+  page-break-after: avoid;
+}
+.meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  font-size: 0.85em;
+  color: var(--fg-soft);
+  align-items: center;
+}
+.meta-tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.meta-tag {
+  background: #eef2f6;
+  color: #475569;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.85em;
+}
+.meta-source a { color: var(--link); text-decoration: none; }
+.meta-source a:hover { text-decoration: underline; }
+.meta-date { color: var(--fg-soft); }
+
+/* ---------- Headings ---------- */
+h1, h2, h3, h4, h5, h6 {
+  margin: 1.6em 0 0.6em;
+  line-height: 1.3;
+  font-weight: 650;
+  page-break-after: avoid;
+}
+h1 { font-size: 1.75em; border-bottom: 2px solid var(--border); padding-bottom: 0.25em; }
+h2 { font-size: 1.4em;  border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
+h3 { font-size: 1.18em; }
+h4 { font-size: 1.05em; }
+
+/* ---------- Body ---------- */
+p { margin: 0.6em 0; }
+ul, ol { margin: 0.5em 0; padding-left: 1.6em; }
+li { margin: 0.2em 0; }
+li > p { margin: 0.2em 0; }
+hr { border: none; border-top: 1px solid var(--border); margin: 1.6em 0; }
+
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---------- Inline code ---------- */
+code {
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas,
+    "Liberation Mono", "Source Code Pro", monospace;
+  background: var(--inline-code-bg);
+  font-size: 0.88em;
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+}
+
+/* ---------- Code blocks ---------- */
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 12px 14px;
+  overflow: auto;
+  font-size: 0.86em;
+  line-height: 1.5;
+  page-break-inside: avoid;
+}
+pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: 1em;
+  white-space: pre;
+}
+
+/* ---------- Tables ---------- */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  font-size: 0.93em;
+  page-break-inside: avoid;
+}
+th, td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+thead th {
+  background: #f1f5f9;
+  font-weight: 600;
+}
+tbody tr:nth-child(even) td { background: #fafbfc; }
+
+/* ---------- Blockquote ---------- */
+blockquote {
+  border-left: 4px solid var(--border);
+  margin: 1em 0;
+  padding: 0.4em 1em;
+  color: var(--fg-soft);
+  background: #fafbfc;
+  page-break-inside: avoid;
+}
+
+/* ---------- Callouts (Obsidian) ---------- */
+.callout {
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  padding: 10px 14px 10px 14px;
+  margin: 1em 0;
+  background: rgba(99,102,241,0.08);
+  page-break-inside: avoid;
+}
+.callout > .callout-title {
+  font-weight: 650;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 4px;
+  color: #1f2328;
+}
+.callout .callout-icon { font-size: 1em; }
+.callout .callout-body > :first-child { margin-top: 0; }
+.callout .callout-body > :last-child  { margin-bottom: 0; }
+.callout pre { background: rgba(255,255,255,0.7); }
+.callout code { background: rgba(255,255,255,0.7); }
+
+/* Per-type accent colours (kept here so screen view matches print) */
+.callout-abstract  { border-left-color: #7c3aed; }
+.callout-summary   { border-left-color: #64748b; }
+.callout-tldr      { border-left-color: #7c3aed; }
+.callout-note      { border-left-color: #3b82f6; }
+.callout-info      { border-left-color: #06b6d4; }
+.callout-tip       { border-left-color: #10b981; }
+.callout-hint      { border-left-color: #10b981; }
+.callout-important { border-left-color: #10b981; }
+.callout-success   { border-left-color: #10b981; }
+.callout-check     { border-left-color: #10b981; }
+.callout-done      { border-left-color: #10b981; }
+.callout-checklist { border-left-color: #10b981; }
+.callout-question  { border-left-color: #06b6d4; }
+.callout-help      { border-left-color: #06b6d4; }
+.callout-faq       { border-left-color: #06b6d4; }
+.callout-warning   { border-left-color: #f59e0b; }
+.callout-caution   { border-left-color: #f59e0b; }
+.callout-attention { border-left-color: #f59e0b; }
+.callout-danger    { border-left-color: #ef4444; }
+.callout-error     { border-left-color: #ef4444; }
+.callout-bug       { border-left-color: #ef4444; }
+.callout-example   { border-left-color: #6366f1; }
+.callout-quote     { border-left-color: #64748b; }
+.callout-cite      { border-left-color: #64748b; }
+
+/* ---------- Wiki links ---------- */
+.wikilink {
+  background: #eef2f6;
+  color: #475569;
+  border-radius: 3px;
+  padding: 0 0.32em;
+  font-size: 0.95em;
+  text-decoration: none;
+}
+
+/* ---------- Math ---------- */
+.math.math-block {
+  text-align: center;
+  margin: 1em 0;
+  page-break-inside: avoid;
+  overflow-x: auto;
+}
+.katex-display {
+  margin: 0.6em 0 !important;
+  page-break-inside: avoid;
+}
+.katex { font-size: 1.05em; }
+
+/* ---------- Graphviz / Mermaid ---------- */
+.graphviz, pre.mermaid {
+  display: flex;
+  justify-content: center;
+  padding: 1em 0;
+  page-break-inside: avoid;
+}
+/* SVG 自身可能带 width/height 属性，必须 !important 覆盖；本地生成的图（graphviz/mermaid）限到 90% */
+.graphviz svg,
+pre.mermaid svg {
+  width: 90% !important;
+  max-width: 90% !important;
+  height: auto !important;
+}
+.graphviz-error { border: 1px dashed #ef4444; }
+pre.mermaid { background: transparent; border: none; }
+
+/* markdown 里 ![](url) 引入的外部图片限到 65%，避免 datawhale 等大尺寸 PNG 占满整页 */
+img { display: block; margin: 0 auto; max-width: 65%; height: auto; }
+
+/* ---------- Task lists ---------- */
+ul.contains-task-list { list-style: none; padding-left: 1em; }
+li.task-list-item input[type=checkbox] { margin-right: 0.4em; }
+
+/* ---------- Print (A4) ---------- */
+@page {
+  size: A4;
+  margin: 1.5cm 1.5cm 2cm 1.5cm;
+}
+
+@media print {
+  html, body {
+    background: #ffffff;
+    font-size: 11pt;
+    line-height: 1.65;
+    color: #000;
+  }
+  body {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    box-shadow: none;
+  }
+  header.meta {
+    border-bottom: 1px solid #999;
+    margin-bottom: 1em;
+    padding-bottom: 0.5em;
+  }
+  header.meta h1.doc-title { font-size: 22pt; }
+  h1 { font-size: 22pt; border-color: #999; }
+  h2 {
+    font-size: 16pt;
+    border-color: #999;
+    page-break-before: auto;
+    page-break-after: avoid;
+  }
+  h3 { font-size: 13pt; }
+  h4 { font-size: 11.5pt; }
+  p, li { orphans: 3; widows: 3; }
+
+  pre, pre code {
+    font-size: 9.5pt;
+    line-height: 1.4;
+  }
+  pre {
+    border-color: #bbb;
+    page-break-inside: avoid;
+  }
+
+  table { font-size: 9.5pt; page-break-inside: avoid; }
+  thead th { background: #eee !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  tbody tr:nth-child(even) td { background: #f7f7f7 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  blockquote, .callout { page-break-inside: avoid; }
+  .callout { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  .math.math-block, .katex-display, .graphviz, pre.mermaid {
+    page-break-inside: avoid;
+  }
+
+  /* Do not append URL after links when printing */
+  a, a:visited { color: #000; text-decoration: none; }
+  a[href]::after { content: ""; }
+
+  .wikilink { background: #eee !important; color: #333 !important;
+              -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

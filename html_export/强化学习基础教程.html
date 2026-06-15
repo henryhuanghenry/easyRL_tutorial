@@ -1,0 +1,887 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>强化学习基础（Easy-RL Ch.1）高密度教程</title>
+  <link rel="stylesheet" href="_assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3/lib/viz-standalone.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', async function () {
+      // 1. highlight.js — only on blocks that opted in via language-XXX class
+      try {
+        document.querySelectorAll('pre code').forEach(function (block) {
+          if (block.classList.contains('language-dot')) return;
+          if (block.classList.contains('language-mermaid')) return;
+          // Skip auto-detect on un-tagged blocks (e.g. ASCII diagrams) — hljs
+          // mis-classifies short text and recolours it badly.
+          var hasLang = false;
+          for (var i = 0; i < block.classList.length; i++) {
+            if (block.classList[i].indexOf('language-') === 0) { hasLang = true; break; }
+          }
+          if (!hasLang) return;
+          window.hljs && window.hljs.highlightElement(block);
+        });
+      } catch (e) { console.warn('hljs failed', e); }
+
+      // 2. Graphviz: replace <pre><code class="language-dot"> with rendered SVG
+      try {
+        if (window.Viz && typeof window.Viz.instance === 'function') {
+          const vizInstance = await window.Viz.instance();
+          document.querySelectorAll('pre code.language-dot').forEach(function (block) {
+            try {
+              const svg = vizInstance.renderSVGElement(block.textContent);
+              const wrapper = document.createElement('div');
+              wrapper.className = 'graphviz';
+              wrapper.appendChild(svg);
+              block.parentElement.replaceWith(wrapper);
+            } catch (err) {
+              console.error('viz render failed', err);
+              block.parentElement.classList.add('graphviz-error');
+            }
+          });
+        } else {
+          console.warn('viz-js not loaded');
+        }
+      } catch (e) { console.warn('viz init failed', e); }
+
+      // 3. Mermaid
+      try {
+        if (window.mermaid) {
+          window.mermaid.initialize({ startOnLoad: false, theme: 'default' });
+          await window.mermaid.run({ querySelector: 'pre.mermaid' });
+        }
+      } catch (e) { console.warn('mermaid failed', e); }
+
+      // 4. KaTeX last so it does not fight hljs/viz
+      try {
+        if (window.renderMathInElement) {
+          window.renderMathInElement(document.body, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$',  right: '$',  display: false }
+            ],
+            throwOnError: false,
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+          });
+        }
+      } catch (e) { console.warn('katex failed', e); }
+    });
+  </script>
+</head>
+<body>
+<header class="meta">
+  <h1 class="doc-title">强化学习基础（Easy-RL Ch.1）高密度教程</h1>
+  <div class="meta-row">
+    <span class="meta-tags"><span class="meta-tag">#强化学习</span><span class="meta-tag">#RL基础</span><span class="meta-tag">#MDP</span><span class="meta-tag">#POMDP</span><span class="meta-tag">#探索利用</span></span>
+    <span class="meta-source">来源：<a href="https://datawhalechina.github.io/easy-rl/#/chapter1/chapter1">https://datawhalechina.github.io/easy-rl/#/chapter1/chapter1</a></span>
+    <span class="meta-date">2026-06-14</span>
+  </div>
+</header>
+
+<main class="doc">
+<h1 id="强化学习基础">强化学习基础</h1>
+<div class="callout callout-abstract" style="border-left-color:#7c3aed; background:#7c3aed14;">
+  <div class="callout-title"><span class="callout-icon">📋</span><span class="callout-title-text">一句话</span></div>
+  <div class="callout-body"><p><strong>强化学习（RL）</strong> 研究<strong>智能体（agent）</strong> 如何在<strong>未知、随机、奖励延迟</strong>的环境中，通过&quot;动作→观测→奖励&quot;的闭环交互，学到一个<strong>最大化期望累积奖励</strong> <span class="math math-inline">$\mathbb E\!\left[\sum_{k=0}^{\infty}\gamma^k r_{t+k+1}\right]$</span> 的策略。与监督学习相比，它没有标签、数据非 i.i.d.、且自己生成训练数据。</p>
+</div>
+</div>
+<hr />
+<h2 id="一、什么是强化学习">一、什么是强化学习</h2>
+<h3 id="1.1-智能体—环境闭环">1.1 智能体—环境闭环</h3>
+<p>RL 把世界拆成两半，每一步反复执行三件事：</p>
+<pre><code>智能体 ──动作 a_t──▶ 环境
+       ◀──观测 o_{t+1}, 奖励 r_{t+1}──
+</code></pre>
+<p>智能体只能动，不能看到环境内部；环境只输出<strong>观测</strong>和<strong>标量奖励</strong>。智能体的目标不是&quot;预测对&quot;，而是<strong>让长期累积奖励最大</strong>。</p>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">与&quot;控制论&quot;的血缘</span></div>
+  <div class="callout-body"><p>这套闭环本质就是<strong>最优控制（optimal control）</strong> 的样本驱动版本——经典控制需要 <span class="math math-inline">$\dot x = f(x,u)$</span> 解析模型，RL 假装什么都不知道，只看 <span class="math math-inline">$(s_t,a_t,r_t,s_{t+1})$</span> 这一串四元组。</p>
+</div>
+</div>
+<h3 id="1.2-与监督学习的本质差别">1.2 与监督学习的本质差别</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>监督学习（SL）</th>
+<th>强化学习（RL）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>数据来源</strong></td>
+<td>人工标注、固定数据集</td>
+<td>智能体与环境交互产生（policy 自己造数据）</td>
+</tr>
+<tr>
+<td><strong>i.i.d. 假设</strong></td>
+<td>必须 i.i.d.，样本独立</td>
+<td><strong>强时间相关</strong>，相邻帧高度相关</td>
+</tr>
+<tr>
+<td><strong>监督信号</strong></td>
+<td>每条样本都有正确标签</td>
+<td>只有<strong>延迟的标量奖励</strong>，无&quot;正确动作&quot;</td>
+</tr>
+<tr>
+<td><strong>反馈时机</strong></td>
+<td>即时（一次前向就知道对错）</td>
+<td><strong>延迟</strong>（赢/输可能 10s 后才揭晓）</td>
+</tr>
+<tr>
+<td><strong>数据分布</strong></td>
+<td>静态，训练时已知</td>
+<td><strong>随策略改变而漂移</strong>（policy 一变、<span class="math math-inline">$s$</span> 的分布也变）</td>
+</tr>
+<tr>
+<td><strong>性能上限</strong></td>
+<td>标注者水平（人类）</td>
+<td><strong>可超越人类</strong>（AlphaGo / Atari 超人表现）</td>
+</tr>
+<tr>
+<td><strong>失败代价</strong></td>
+<td>预测错一张图</td>
+<td>错的动作→坏的数据→更坏的策略，<strong>会发散</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">为什么 RL &quot;可以超越人类&quot;</span></div>
+  <div class="callout-body"><p>SL 的天花板由标注者决定（ImageNet 上限就是人）。RL 没有教师，<strong>只有环境本身的反馈</strong>——只要奖励信号定义对了，智能体可以走出人类没走过的路（AlphaGo 的&quot;神之一手&quot;就是这种产物）。</p>
+</div>
+</div>
+<h3 id="1.3-RL-的三大困难">1.3 RL 的三大困难</h3>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">RL 难在哪儿（按重要性排序）</span></div>
+  <div class="callout-body"><ol>
+<li><strong>延迟奖励 (delayed reward)</strong>：现在的动作、过几分钟才知道好坏 → <strong>信用分配（credit assignment）</strong> 难。</li>
+<li><strong>试错探索 (trial-and-error)</strong>：没有标签告诉你正确动作是什么，只能&quot;乱试看反馈&quot;。</li>
+<li><strong>非独立同分布 (non-i.i.d.)</strong>：连续帧高度相关，普通 SGD 在这种数据上会震荡。</li>
+<li><strong>自产数据的反馈环</strong>：策略差→采到的轨迹差→学到的策略更差。<strong>不稳定就会发散</strong>，所以 RL 大量篇幅在讲&quot;如何让训练稳定&quot;。</li>
+</ol>
+</div>
+</div>
+<hr />
+<h2 id="二、序列决策框架">二、序列决策框架</h2>
+<h3 id="2.1-历史、状态与观测">2.1 历史、状态与观测</h3>
+<p>智能体到 <span class="math math-inline">$t$</span> 时刻为止见过的所有东西，叫<strong>历史（history）</strong>：</p>
+<div class="math math-block">
+$$
+H_t = o_1, a_1, r_2, o_2, a_2, r_3, \ldots, o_t, a_t, r_{t+1}
+$$
+</div>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">索引约定（全文统一 Sutton 风格）</span></div>
+  <div class="callout-body"><p>本教程采用 Sutton &amp; Barto 索引：动作 <span class="math math-inline">$a_t$</span> 执行后，环境在 <span class="math math-inline">$t+1$</span> 步返回奖励 <span class="math math-inline">$r_{t+1}$</span> 和观测 <span class="math math-inline">$o_{t+1}$</span>。所以历史中&quot;做完 <span class="math math-inline">$a_t$</span> 后拿到的奖励&quot;记为 <span class="math math-inline">$r_{t+1}$</span>（而非 Easy-RL 原文偶尔出现的 <span class="math math-inline">$r_t$</span>）；后文 <span class="math math-inline">$V_\pi$</span>、<span class="math math-inline">$Q_\pi$</span> 的求和都按这一约定。</p>
+</div>
+</div>
+<p>&quot;状态&quot;就是历史的一个<strong>充分统计量</strong>——能从中推出未来所需的一切：</p>
+<div class="math math-block">
+$$
+S_t = f(H_t)
+$$
+</div>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">三个容易混的&quot;状态&quot;</span></div>
+  <div class="callout-body"><ul>
+<li><strong>环境状态</strong> <span class="math math-inline">$s_t^e = f^e(H_t)$</span>：环境内部真正用来转移的变量（玩家看不到）</li>
+<li><strong>智能体状态</strong> <span class="math math-inline">$s_t^a = f^a(H_t)$</span>：智能体根据观测推断的状态</li>
+<li><strong>观测</strong> <span class="math math-inline">$o_t$</span>：环境暴露给智能体的东西（屏幕一帧、传感器读数）</li>
+</ul>
+</div>
+</div>
+<h3 id="2.2-完全可观测-vs-部分可观测">2.2 完全可观测 vs 部分可观测</h3>
+<table>
+<thead>
+<tr>
+<th>设定</th>
+<th>何时成立</th>
+<th>数学模型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>完全可观测 (fully observed)</strong></td>
+<td><span class="math math-inline">$o_t = s_t^e = s_t^a$</span>，智能体看到了环境全部状态</td>
+<td><strong>MDP</strong> <span class="math math-inline">$\langle S,A,P,R,\gamma\rangle$</span></td>
+</tr>
+<tr>
+<td><strong>部分可观测 (partially observed)</strong></td>
+<td>智能体只看到观测，看不见真实状态（牌面/雷达回波/单帧画面）</td>
+<td><strong>POMDP</strong> <span class="math math-inline">$\langle S,A,T,R,\Omega,O,\gamma\rangle$</span></td>
+</tr>
+</tbody>
+</table>
+<p>POMDP 七元组里多出来的：<span class="math math-inline">$\Omega$</span> 是观测空间，<span class="math math-inline">$O(o\mid s,a)$</span> 是观测概率，<span class="math math-inline">$S$</span> 是<strong>隐变量</strong>。</p>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">单帧 Atari 是 POMDP，叠 4 帧后近似 MDP</span></div>
+  <div class="callout-body"><p>单帧看不出球的速度方向，是 POMDP。DQN 原论文把<strong>最近 4 帧叠成一个张量</strong>作为状态，让&quot;速度、加速度&quot;等动力学量可以从堆叠中读出，<strong>人工把 POMDP 近似成 MDP</strong>——这是 Atari RL 的标配技巧。</p>
+</div>
+</div>
+<h3 id="2.3-马尔可夫性">2.3 马尔可夫性</h3>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">马尔可夫性 (Markov property)</span></div>
+  <div class="callout-body"><p>&quot;<strong>未来只依赖当前状态，与过去无关</strong>&quot;：
+<span class="math math-inline">$\boxed{\;P(s_{t+1}\mid s_t, a_t, s_{t-1}, a_{t-1},\ldots) = P(s_{t+1}\mid s_t, a_t)\;}$</span>
+满足该性质的随机过程是<strong>马尔可夫过程</strong>；在它之上加上动作 <span class="math math-inline">$A$</span>、奖励 <span class="math math-inline">$R$</span>、折扣 <span class="math math-inline">$\gamma$</span>，就构成 <strong>MDP</strong>。这条假设是 RL 大部分算法（Q-learning、Bellman 方程）能成立的根。</p>
+</div>
+</div>
+<p>实际工作中，如果状态设计不够充分（如只取一帧像素），马尔可夫性不成立，算法会变得不稳定——<strong>好状态表示 = 让任务尽量满足马尔可夫性</strong>。</p>
+<h3 id="2.4-动作空间">2.4 动作空间</h3>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>含义</th>
+<th>例子</th>
+<th>适配算法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>离散 (discrete)</strong></td>
+<td><span class="math math-inline">$a\in\{1,2,\dots,K\}$</span> 可数</td>
+<td>围棋落子、Atari 按键、迷宫上下左右</td>
+<td>DQN、Sarsa、PG</td>
+</tr>
+<tr>
+<td><strong>连续 (continuous)</strong></td>
+<td><span class="math math-inline">$a\in\mathbb R^d$</span> 实值向量</td>
+<td>机器人关节力矩、自动驾驶方向盘</td>
+<td>DDPG、SAC、PPO（高斯策略）</td>
+</tr>
+</tbody>
+</table>
+<p>连续动作空间下，&quot;对所有 <span class="math math-inline">$a$</span> 取 max&quot;变成连续优化问题——所以 <span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span> 在连续动作上不能直接用，需要 actor 类方法：<span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span> <strong>用确定性 actor 近似 <span class="math math-inline">$\arg\max_a Q$</span></strong>；<span class="wikilink" data-target="SAC" title="SAC">SAC</span> 不走 argmax 路线，而是学<strong>最大熵随机策略</strong>（actor 输出动作分布，目标 = <span class="math math-inline">$\mathbb E[Q] + \alpha\,\mathcal H(\pi)$</span>），鼓励&quot;在等价好的动作上保持多样性&quot;。</p>
+<hr />
+<h2 id="三、智能体的内部结构：策略-/-价值-/-模型">三、智能体的内部结构：策略 / 价值 / 模型</h2>
+<p>一个强化学习智能体由<strong>三个可能存在的部件</strong>构成（不一定都有）：</p>
+<table>
+<thead>
+<tr>
+<th>部件</th>
+<th>学什么</th>
+<th>形式</th>
+<th>给我什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>策略 policy</strong></td>
+<td>状态→动作的映射</td>
+<td><span class="math math-inline">$\pi(a\mid s)$</span> 或 <span class="math math-inline">$a=\pi(s)$</span></td>
+<td>直接告诉你&quot;现在做什么&quot;</td>
+</tr>
+<tr>
+<td><strong>价值函数 value function</strong></td>
+<td>状态/动作的&quot;未来收益&quot;</td>
+<td><span class="math math-inline">$V_\pi(s)$</span>、<span class="math math-inline">$Q_\pi(s,a)$</span></td>
+<td>衡量状态/动作的好坏，用于推策略</td>
+</tr>
+<tr>
+<td><strong>模型 model</strong></td>
+<td>环境的动力学</td>
+<td><span class="math math-inline">$P(s'\mid s,a)$</span>、<span class="math math-inline">$R(s,a)$</span></td>
+<td>让智能体在&quot;脑子里&quot;预演未来</td>
+</tr>
+</tbody>
+</table>
+<h3 id="3.1-策略（policy）">3.1 策略（policy）</h3>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>数学形式</th>
+<th>优点</th>
+<th>典型用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>随机性策略 stochastic</strong></td>
+<td><span class="math math-inline">$\pi(a\mid s) = P(a_t=a\mid s_t=s)$</span></td>
+<td>天然探索；动作多样难以被对手预测</td>
+<td><span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span>、PPO、SAC</td>
+</tr>
+<tr>
+<td><strong>确定性策略 deterministic</strong></td>
+<td><span class="math math-inline">$a^* = \arg\max_a \pi(a\mid s)$</span></td>
+<td>推理快、可重复</td>
+<td>DDPG（actor 部分）、最优控制</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-tip" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">💡</span><span class="callout-title-text">训练用随机、部署用确定</span></div>
+  <div class="callout-body"><p>训练时随机策略给探索；部署时常用<strong>贪婪化（greedy decoding）</strong> 把它转成确定性策略——这是几乎所有 actor 类算法的默认做法。</p>
+</div>
+</div>
+<h3 id="3.2-价值函数（value-function）">3.2 价值函数（value function）</h3>
+<p><strong>状态价值</strong>（用策略 <span class="math math-inline">$\pi$</span> 走下去，从 <span class="math math-inline">$s$</span> 出发能拿到的期望折扣回报）：</p>
+<div class="math math-block">
+$$
+\boxed{\;V_\pi(s) \doteq \mathbb{E}_\pi\!\left[\sum_{k=0}^{\infty}\gamma^k r_{t+k+1}\;\middle|\;s_t=s\right]\;}
+$$
+</div>
+<p><strong>动作价值</strong>（多了一个&quot;先做 <span class="math math-inline">$a$</span>，再按 <span class="math math-inline">$\pi$</span> 走下去&quot;的约束）：</p>
+<div class="math math-block">
+$$
+\boxed{\;Q_\pi(s,a) \doteq \mathbb{E}_\pi\!\left[\sum_{k=0}^{\infty}\gamma^k r_{t+k+1}\;\middle|\;s_t=s, a_t=a\right]\;}
+$$
+</div>
+<div class="callout callout-note" style="border-left-color:#3b82f6; background:#3b82f614;">
+  <div class="callout-title"><span class="callout-icon">📝</span><span class="callout-title-text">为什么需要折扣因子 <span class="math math-inline">$\gamma$</span></span></div>
+  <div class="callout-body"><ol>
+<li><strong>数学上</strong>：让无穷和收敛（否则 <span class="math math-inline">$\sum r$</span> 可能发散）——对于 <strong>continuing 任务必须 <span class="math math-inline">$\gamma\in[0,1)$</span></strong>；<strong>episodic 任务（有终止状态）可取 <span class="math math-inline">$\gamma=1$</span></strong>（如 CartPole、棋类）</li>
+<li><strong>金融直觉</strong>：今天的 100 块 &gt; 10 天后的 100 块（有利息/有不确定性）</li>
+<li><strong>算法上</strong>：<span class="math math-inline">$\gamma$</span> 充当&quot;有效视野长度&quot; <span class="math math-inline">$\approx 1/(1-\gamma)$</span>（折扣权重衰减到 <span class="math math-inline">$1/e$</span> 所需步数），<span class="math math-inline">$\gamma=0.99$</span> 意味&quot;约 100 步外的奖励开始显著被压低&quot;——不是&quot;100 步外就完全不算&quot;</li>
+<li><strong>稳定性</strong>：<span class="math math-inline">$\gamma<1$</span> 让 Bellman 算子成为收缩映射，迭代收敛有保证</li>
+</ol>
+</div>
+</div>
+<p><strong>为什么 Q 比 V 实用</strong>：知道 <span class="math math-inline">$Q^*(s,a)$</span> 后，最优动作直接 <span class="math math-inline">$a^* = \arg\max_a Q^*(s,a)$</span>，<strong>不需要模型</strong>就能决策——这是 <span class="wikilink" data-target="Q-learning" title="Q-learning">Q-learning</span> 的根本卖点。</p>
+<h3 id="3.3-模型（model）">3.3 模型（model）</h3>
+<p>模型把环境的物理刻画成两件东西：</p>
+<table>
+<thead>
+<tr>
+<th>部分</th>
+<th>公式</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>状态转移</strong></td>
+<td><span class="math math-inline">$p^a_{ss'} = P(s_{t+1}=s'\mid s_t=s, a_t=a)$</span></td>
+<td>在 <span class="math math-inline">$s$</span> 做 <span class="math math-inline">$a$</span> 后下一状态的概率</td>
+</tr>
+<tr>
+<td><strong>奖励函数</strong></td>
+<td><span class="math math-inline">$R(s,a) = \mathbb{E}[r_{t+1}\mid s_t=s, a_t=a]$</span></td>
+<td>在 <span class="math math-inline">$s$</span> 做 <span class="math math-inline">$a$</span> 立刻能拿多少奖励</td>
+</tr>
+</tbody>
+</table>
+<p>有了 <span class="math math-inline">$P,R$</span> 就能&quot;在脑子里走棋&quot;——这是 model-based 方法（<span class="wikilink" data-target="Dyna" title="Dyna">Dyna</span>、<span class="wikilink" data-target="AlphaZero" title="AlphaZero">AlphaZero</span>、MuZero）的根基。</p>
+<h3 id="3.4-走迷宫例子：策略-vs-价值的两种解法">3.4 走迷宫例子：策略 vs 价值的两种解法</h3>
+<p><strong>任务</strong>：从 start 到 goal，每步 <span class="math math-inline">$-1$</span> 奖励。</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>表示</th>
+<th>在每格存什么</th>
+<th>怎么选动作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>基于策略 policy-based</strong></td>
+<td><span class="math math-inline">$\pi(s)\to a$</span></td>
+<td>一个箭头（上/下/左/右）</td>
+<td>直接照箭头走</td>
+</tr>
+<tr>
+<td><strong>基于价值 value-based</strong></td>
+<td><span class="math math-inline">$V(s)\in\mathbb R$</span></td>
+<td>一个负数（如起点 <span class="math math-inline">$-16$</span> = 还要 16 步到终点）</td>
+<td>选邻居中 <span class="math math-inline">$V$</span> 最大的方向</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-info" style="border-left-color:#06b6d4; background:#06b6d414;">
+  <div class="callout-title"><span class="callout-icon">ℹ️</span><span class="callout-title-text">价值表也能&quot;挤&quot;出策略</span></div>
+  <div class="callout-body"><p>即使只学了 <span class="math math-inline">$V$</span>，对四个邻居比一下大小就能得到 greedy 策略。所以<strong>价值函数隐式包含策略</strong>——这也是 value-based 智能体不需要显式 <span class="math math-inline">$\pi$</span> 的原因。</p>
+</div>
+</div>
+<hr />
+<h2 id="四、智能体的分类">四、智能体的分类</h2>
+<p>按&quot;学什么&quot;和&quot;用不用模型&quot;两个维度切，得到两张分类表。</p>
+<h3 id="4.1-按学习对象：value-/-policy-/-actor-critic">4.1 按学习对象：value / policy / actor-critic</h3>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>显式学什么</th>
+<th>隐式有什么</th>
+<th>代表算法</th>
+<th>优势</th>
+<th>劣势</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>基于价值 value-based</strong></td>
+<td><span class="math math-inline">$V$</span> 或 <span class="math math-inline">$Q$</span></td>
+<td>策略从 <span class="math math-inline">$\arg\max Q$</span> 隐式推出</td>
+<td><span class="wikilink" data-target="Q-learning" title="Q-learning">Q-learning</span>、<span class="wikilink" data-target="Sarsa" title="Sarsa">Sarsa</span>、<span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span></td>
+<td>数据可复用（off-policy）；样本高效</td>
+<td>连续动作难（要解 argmax）；可能震荡</td>
+</tr>
+<tr>
+<td><strong>基于策略 policy-based</strong></td>
+<td><span class="math math-inline">$\pi_\theta(a\mid s)$</span></td>
+<td>不学价值</td>
+<td><span class="wikilink" data-target="REINFORCE" title="REINFORCE">REINFORCE</span>、<span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span></td>
+<td>连续/高维动作都行；策略天然随机</td>
+<td>方差大、on-policy 浪费样本</td>
+</tr>
+<tr>
+<td><strong>演员-评论员 actor-critic</strong></td>
+<td>同时学 <span class="math math-inline">$\pi$</span> 和 <span class="math math-inline">$V/Q$</span></td>
+<td>—</td>
+<td><span class="wikilink" data-target="A2C" title="A2C">A2C</span>、<span class="wikilink" data-target="A3C" title="A3C">A3C</span>、<span class="wikilink" data-target="PPO教程" title="PPO教程">PPO</span>、<span class="wikilink" data-target="SAC" title="SAC">SAC</span>、<span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span></td>
+<td>兼顾两者优点；可降方差</td>
+<td>实现复杂、需要平衡两个网络</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-success" style="border-left-color:#10b981; background:#10b98114;">
+  <div class="callout-title"><span class="callout-icon">✨</span><span class="callout-title-text">为什么 Actor-Critic 成为主流</span></div>
+  <div class="callout-body"><p>Actor（policy）做决策、Critic（value）当裁判<strong>给低方差的梯度信号</strong>——把 PG 的高方差痛点用 baseline 思想压下去。今天的 SOTA（PPO/SAC）几乎都是 AC 家族。详见 <span class="wikilink" data-target="Actor-Critic教程" title="Actor-Critic教程">Actor-Critic</span>。</p>
+</div>
+</div>
+<h3 id="4.2-按是否学环境模型：model-based-/-model-free">4.2 按是否学环境模型：model-based / model-free</h3>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>学不学 <span class="math math-inline">$P, R$</span></th>
+<th>数据效率</th>
+<th>泛化</th>
+<th>代表算法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>有模型 model-based</strong></td>
+<td>学（或给定）</td>
+<td><strong>高</strong>：可在脑内 rollout</td>
+<td>受模型偏差限制</td>
+<td><span class="wikilink" data-target="AlphaZero" title="AlphaZero">AlphaZero</span>、<span class="wikilink" data-target="MuZero" title="MuZero">MuZero</span>、<span class="wikilink" data-target="Dyna-Q" title="Dyna-Q">Dyna-Q</span>、<span class="wikilink" data-target="MBPO" title="MBPO">MBPO</span></td>
+</tr>
+<tr>
+<td><strong>免模型 model-free</strong></td>
+<td>不学</td>
+<td>低：得在真环境采样</td>
+<td>通常更鲁棒</td>
+<td><span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span>、<span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span>、<span class="wikilink" data-target="PPO教程" title="PPO教程">PPO</span>、<span class="wikilink" data-target="SAC" title="SAC">SAC</span></td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">model-free 为何更主流？</span></div>
+  <div class="callout-body"><ol>
+<li><strong>建模难</strong>：真实环境的 <span class="math math-inline">$P$</span> 经常没法估准（如 Atari 像素动力学）</li>
+<li><strong>模型偏差累积</strong>：rollout 越长，预测误差指数放大</li>
+<li><strong>简单直接</strong>：开源库多、不用工程一套额外的世界模型</li>
+</ol>
+<p>但在<strong>采样昂贵</strong>的场景（真实机械臂、自动驾驶），model-based 不可替代——OpenAI 翻魔方就是<strong>先在仿真里跑 model-based，再 sim-to-real</strong>。</p>
+</div>
+</div>
+<h3 id="4.3-一张图分类所有智能体">4.3 一张图分类所有智能体</h3>
+<p>按&quot;是否有 policy、value、model&quot;三选项可分八格，常见的几格：</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>有 policy</th>
+<th>有 value</th>
+<th>有 model</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>value-based</td>
+<td>⚪（隐式）</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>policy-based</td>
+<td>✅</td>
+<td>❌</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>actor-critic</td>
+<td>✅</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>model-based AC</td>
+<td>✅</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>pure planning（如 MCTS+完美模型）</td>
+<td>❌</td>
+<td>⚪</td>
+<td>✅</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="五、核心张力：探索-vs-利用">五、核心张力：探索 vs 利用</h2>
+<div class="callout callout-abstract" style="border-left-color:#7c3aed; background:#7c3aed14;">
+  <div class="callout-title"><span class="callout-icon">📋</span><span class="callout-title-text">探索-利用窘境</span></div>
+  <div class="callout-body"><p><strong>探索 (exploration)</strong>：试新动作，希望发现更好的——可能拿到更多奖励，也可能&quot;一无所有&quot;。
+<strong>利用 (exploitation)</strong>：重复已知最优动作——稳拿奖励，但永远走不出局部最优。
+总尝试次数有限，<strong>加强一方必削弱另一方</strong>，这就是 RL 的根本张力。</p>
+</div>
+</div>
+<h3 id="5.1--臂赌博机：最简形式">5.1 <span class="math math-inline">$K$</span>-臂赌博机：最简形式</h3>
+<p>把 RL 退化到&quot;无状态、单步&quot;，只剩<strong>多臂赌博机（multi-armed bandit）</strong>：<span class="math math-inline">$K$</span> 个老虎机，每个以未知概率吐币，目标是 <span class="math math-inline">$T$</span> 次按键累积奖励最大。</p>
+<table>
+<thead>
+<tr>
+<th>极端策略</th>
+<th>做法</th>
+<th>后果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>仅探索 exploration-only</strong></td>
+<td>平均分配尝试机会到每个臂</td>
+<td>估计准了，但失去太多选最优的机会</td>
+</tr>
+<tr>
+<td><strong>仅利用 exploitation-only</strong></td>
+<td>始终选当前平均奖励最大的臂</td>
+<td>选得快，但很可能根本没发现最优臂</td>
+</tr>
+</tbody>
+</table>
+<p>两者都拿不到累积奖励最大值——<strong>必须折中</strong>。详见 <span class="wikilink" data-target="多臂赌博机" title="多臂赌博机">多臂赌博机</span> 和 <span class="wikilink" data-target="ε-greedy" title="ε-greedy">ε-greedy</span>、<span class="wikilink" data-target="UCB" title="UCB">UCB</span>、<span class="wikilink" data-target="Thompson Sampling" title="Thompson Sampling">Thompson Sampling</span>。</p>
+<h3 id="5.2-日常生活类比">5.2 日常生活类比</h3>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>利用</th>
+<th>探索</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>吃饭</td>
+<td>去常去的那家</td>
+<td>搜个新店试试</td>
+</tr>
+<tr>
+<td>投广告</td>
+<td>投点击率最高的素材</td>
+<td>试一版新文案</td>
+</tr>
+<tr>
+<td>挖油</td>
+<td>在已知油田继续打</td>
+<td>新地点勘探（高方差）</td>
+</tr>
+<tr>
+<td>街霸</td>
+<td>蹲角落出脚</td>
+<td>放大招</td>
+</tr>
+</tbody>
+</table>
+<h3 id="5.3-RL-中如何实现-trade-off（前瞻）">5.3 RL 中如何实现 trade-off（前瞻）</h3>
+<ul>
+<li><strong>ε-greedy</strong>：以<strong>退火的</strong> <span class="math math-inline">$\varepsilon$</span> 概率随机探索（DQN 用：<span class="math math-inline">$\varepsilon$</span> 从 1.0 线性退火到 0.1/0.01；不退火则收敛不到最优）</li>
+<li><strong>熵正则</strong>：在目标里加 <span class="math math-inline">$\mathcal H(\pi)$</span>，奖励&quot;分布平坦&quot;（SAC 用）</li>
+<li><strong>乐观初始化</strong>：Q 初值给高，自然鼓励试没去过的动作</li>
+<li><strong>UCB / Thompson</strong>：基于不确定度选臂</li>
+</ul>
+<hr />
+<h2 id="六、学习（learning）-vs-规划（planning）">六、学习（learning） vs 规划（planning）</h2>
+<table>
+<thead>
+<tr>
+<th>范式</th>
+<th>环境是否已知</th>
+<th>智能体怎么用它</th>
+<th>典型场景</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>学习 learning</strong></td>
+<td>未知</td>
+<td>实时与环境交互、积累经验</td>
+<td>大部分 model-free RL</td>
+</tr>
+<tr>
+<td><strong>规划 planning</strong></td>
+<td>已知</td>
+<td>在&quot;内部模拟器&quot;里搜索/迭代</td>
+<td>围棋（规则确定）、动态规划</td>
+</tr>
+</tbody>
+</table>
+<p>实战中常见的 hybrid：<strong>先学一个模型，再用它规划</strong>——这就是 model-based RL 的核心思路（MuZero 学到世界模型后，用 MCTS 在脑内规划）。</p>
+<hr />
+<h2 id="七、强化学习历史：从手工特征到深度-RL">七、强化学习历史：从手工特征到深度 RL</h2>
+<table>
+<thead>
+<tr>
+<th>时代</th>
+<th>形态</th>
+<th>类比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>标准 RL</strong></td>
+<td>手工设计特征 + 价值函数/策略表（如 TD-Gammon）</td>
+<td>传统 CV：HOG/DPM + SVM</td>
+</tr>
+<tr>
+<td><strong>深度 RL (Deep RL)</strong></td>
+<td>端到端神经网络拟合 <span class="math math-inline">$\pi$</span> 或 <span class="math math-inline">$Q$</span></td>
+<td>深度 CV：CNN 端到端</td>
+</tr>
+</tbody>
+</table>
+<p><strong>爆发点</strong>：2013 DeepMind 用 DQN（CNN+Q-learning）直接吃 Atari 像素，<strong>用同一套网络打通 49 个游戏</strong>——这是深度 RL 的&quot;AlexNet 时刻&quot;。</p>
+<p>为什么 deep RL 在 2015 后才爆发：</p>
+<ol>
+<li><strong>算力</strong>：GPU 让&quot;亿级帧试错&quot;变得可行</li>
+<li><strong>端到端训练</strong>：把特征工程和决策合并优化，去掉了人工特征瓶颈</li>
+<li><strong>稳定化技巧</strong>：experience replay、target network、PPO 的 clip——一系列让训练<strong>不崩</strong>的工程</li>
+</ol>
+<hr />
+<h2 id="八、Gym-简介（最低限度够用）">八、Gym 简介（最低限度够用）</h2>
+<p>Gym 是 OpenAI 出的环境仿真库，<strong>接口极简</strong>，几乎所有 RL 论文/教程都用它。</p>
+<table>
+<thead>
+<tr>
+<th>概念</th>
+<th>类</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Discrete(n)</code></td>
+<td><code>gym.spaces.Discrete</code></td>
+<td>离散空间，n 个可能值</td>
+</tr>
+<tr>
+<td><code>Box(low, high, shape)</code></td>
+<td><code>gym.spaces.Box</code></td>
+<td>连续空间，每维有上下界</td>
+</tr>
+<tr>
+<td><code>env.observation_space</code></td>
+<td>—</td>
+<td>观测空间</td>
+</tr>
+<tr>
+<td><code>env.action_space</code></td>
+<td>—</td>
+<td>动作空间</td>
+</tr>
+</tbody>
+</table>
+<p><strong>关键 5 个 API</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>调用</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gym.make('Env-v0')</code></td>
+<td>取出环境</td>
+</tr>
+<tr>
+<td><code>env.reset()</code></td>
+<td>重置回合，返回初始 obs</td>
+</tr>
+<tr>
+<td><code>env.step(action)</code></td>
+<td>走一步，返回 <code>(obs, reward, done, info)</code></td>
+</tr>
+<tr>
+<td><code>env.render()</code></td>
+<td>显示图形界面</td>
+</tr>
+<tr>
+<td><code>env.close()</code></td>
+<td>关闭环境（<strong>别手动关窗口</strong>，会内存泄漏）</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-warning" style="border-left-color:#f59e0b; background:#f59e0b14;">
+  <div class="callout-title"><span class="callout-icon">⚠️</span><span class="callout-title-text">版本陷阱</span></div>
+  <div class="callout-body"><p>Gym 0.26+ <strong>不向后兼容</strong>：<code>reset</code> 返回 <code>(obs, info)</code>，<code>step</code> 返回 <code>(obs, reward, terminated, truncated, info)</code>（5 值！）。</p>
+<ul>
+<li><code>terminated = True</code>：<strong>自然终止</strong>（吸收态，例：CartPole 倒了、棋局结束）→ bootstrap 时 <span class="math math-inline">$V(s_{next})$</span> 应<strong>置 0</strong></li>
+<li><code>truncated = True</code>：<strong>时限截断</strong>（仍然能继续，只是被外部强制停止）→ bootstrap 时 <span class="math math-inline">$V(s_{next})$</span> <strong>不应置 0</strong></li>
+</ul>
+<p>把 <code>truncated</code> 当 <code>done</code> 处理会让长 horizon 任务的价值估计永远偏低。本教程和大多老代码用 0.25.2 接口。新代码建议直接用 <a href="https://gymnasium.farama.org/" target="_blank" rel="noopener noreferrer">Gymnasium</a>（社区维护的 fork）。</p>
+</div>
+</div>
+<hr />
+<h2 id="九、Cheat-Sheet">九、Cheat Sheet</h2>
+<h3 id="最小可跑：CartPole-随机策略">最小可跑：CartPole 随机策略</h3>
+<pre><code class="language-python">import gym
+
+env = gym.make(&#x27;CartPole-v0&#x27;)
+obs = env.reset()
+
+episode_reward = 0
+for t in range(1000):
+    # env.render()  # 可视化时打开
+    action = env.action_space.sample()       # 随机策略
+    obs, reward, done, info = env.step(action)
+    episode_reward += reward
+    if done:
+        print(f&#x27;Episode finished after {t+1} steps, reward={episode_reward}&#x27;)
+        obs = env.reset()
+        episode_reward = 0
+env.close()
+</code></pre>
+<h3 id="标准-play-循环（评估智能体性能）">标准 play 循环（评估智能体性能）</h3>
+<pre><code class="language-python">import numpy as np
+
+def play(env, agent, render=False, train=False):
+    &quot;&quot;&quot;跑一回合，返回总奖励&quot;&quot;&quot;
+    episode_reward = 0.0
+    obs = env.reset()
+    while True:
+        if render: env.render()
+        action = agent.decide(obs)
+        next_obs, reward, done, _ = env.step(action)
+        episode_reward += reward
+        if train:
+            agent.learn(obs, action, reward, done)
+        if done:
+            break
+        obs = next_obs
+    return episode_reward
+
+# 评估：100 回合平均（学术界惯例）
+rewards = [play(env, agent) for _ in range(100)]
+print(f&#x27;Mean 100-ep reward = {np.mean(rewards):.2f}&#x27;)
+</code></pre>
+<h3 id="常见坑">常见坑</h3>
+<div class="callout callout-summary" style="border-left-color:#64748b; background:#64748b14;">
+  <div class="callout-title"><span class="callout-icon">📌</span><span class="callout-title-text">RL 入门最容易踩的雷</span></div>
+  <div class="callout-body"><ul>
+<li><strong>维度搞错</strong>：<code>obs</code> shape 因环境而异（CartPole 是 4 维向量，Atari 是 <code>(84,84,4)</code>），网络输入层要对应</li>
+<li><strong>没设种子</strong>：Gym <strong>≤ 0.25</strong> 三件套 <code>env.seed(k)</code> + <code>np.random.seed(k)</code> + <code>torch.manual_seed(k)</code>；Gym <strong>0.26+</strong> / Gymnasium 把 <code>env.seed()</code> 移除了，改为 <code>env.reset(seed=k)</code>。直接抄旧代码会 <code>AttributeError</code>。</li>
+<li><strong>0.25 vs 0.26 接口</strong>：<code>step</code> 返回 4 元组还是 5 元组，<strong>漏一个 truncated 直接报 unpacking 错误</strong></li>
+<li><strong><code>env.close()</code> 必调</strong>：渲染窗口手动关闭会导致内存不释放，严重时死机</li>
+<li><strong>观测连续帧高度相关</strong>：直接喂 SGD 会震荡，需 <strong>experience replay</strong> 打散（见 <span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span>）</li>
+<li><strong>奖励量级</strong>：原始奖励常常 <span class="math math-inline">$\pm 100$</span> 量级，<strong>clip 到 <span class="math math-inline">$[-1,1]$</span> 或归一化</strong> 是 Atari 标配</li>
+<li><strong>延迟奖励 → 信用分配</strong>：分不清&quot;是 10 步前的好动作还是刚才那步的好动作&quot;，靠 <span class="math math-inline">$\gamma$</span> 折扣 + n-step return</li>
+<li><strong>POMDP 当 MDP 训</strong>：单帧像素不够马尔可夫——叠 4 帧、或用 RNN（<span class="wikilink" data-target="DRQN" title="DRQN">DRQN</span>）</li>
+<li><strong>策略导致数据漂移</strong>：每改一次策略，采到的状态分布就变；on-policy 算法（PG）<strong>旧数据立刻作废</strong></li>
+<li><strong>超参起手式</strong>：<span class="math math-inline">$\gamma\in[0.95, 0.99]$</span>、learning rate <span class="math math-inline">$\sim 3\times 10^{-4}$</span>（Adam）、batch size 32-256</li>
+</ul>
+</div>
+</div>
+<hr />
+<h2 id="十、一图总览：RL-全景">十、一图总览：RL 全景</h2>
+<pre><code class="language-dot">digraph RL_Overview {
+  rankdir=TB;
+  node [shape=box, style=&quot;rounded,filled&quot;, fontname=&quot;Helvetica&quot;];
+  edge [fontname=&quot;Helvetica&quot;, fontsize=10];
+
+  // 起点：核心闭环
+  Loop [label=&quot;智能体—环境闭环\n(s, a, r, s&#x27;)&quot;, fillcolor=&quot;#f0f4ff&quot;];
+
+  // 关键概念层
+  Markov [label=&quot;马尔可夫性\nP(s&#x27;|s,a)&quot;, fillcolor=&quot;#fff4d6&quot;];
+  Reward [label=&quot;累积奖励\nG_t = Σ γ^k r_{t+k+1}&quot;, fillcolor=&quot;#fff4d6&quot;];
+  Explore [label=&quot;探索-利用 trade-off\n(K-臂赌博机)&quot;, fillcolor=&quot;#fff4d6&quot;];
+
+  // 三要素
+  Policy [label=&quot;策略 π(a|s)\n随机 / 确定&quot;, fillcolor=&quot;#e8e8e8&quot;];
+  Value [label=&quot;价值函数\nV(s), Q(s,a)&quot;, fillcolor=&quot;#e8e8e8&quot;];
+  Model [label=&quot;模型\nP(s&#x27;|s,a), R(s,a)&quot;, fillcolor=&quot;#e8e8e8&quot;];
+
+  // 算法分支
+  ValueBased [label=&quot;value-based\nQ-learning / DQN&quot;, fillcolor=&quot;#d6ffd6&quot;];
+  PolicyBased [label=&quot;policy-based\nREINFORCE / PG&quot;, fillcolor=&quot;#d6ffd6&quot;];
+  AC [label=&quot;actor-critic\nA2C / PPO / SAC&quot;, fillcolor=&quot;#d6ffd6&quot;];
+
+  ModelFree [label=&quot;model-free\n(主流)&quot;, fillcolor=&quot;#d6ffd6&quot;];
+  ModelBased [label=&quot;model-based\nMuZero / Dyna&quot;, fillcolor=&quot;#d6ffd6&quot;];
+
+  // SOTA 落脚点
+  SOTA [label=&quot;现代 SOTA\nPPO / SAC / MuZero&quot;, fillcolor=&quot;#ffd6d6&quot;];
+
+  // 连边
+  Loop -&gt; Markov;
+  Loop -&gt; Reward;
+  Loop -&gt; Explore;
+
+  Markov -&gt; Policy;
+  Markov -&gt; Value;
+  Markov -&gt; Model;
+
+  Reward -&gt; Value;
+  Reward -&gt; Policy;
+
+  Policy -&gt; PolicyBased;
+  Value -&gt; ValueBased;
+  Policy -&gt; AC;
+  Value -&gt; AC;
+  Model -&gt; ModelBased;
+
+  ValueBased -&gt; ModelFree [style=dashed];
+  PolicyBased -&gt; ModelFree [style=dashed];
+  AC -&gt; ModelFree [style=dashed];
+
+  ModelFree -&gt; SOTA;
+  ModelBased -&gt; SOTA;
+  AC -&gt; SOTA;
+
+  Explore -&gt; SOTA [label=&quot;ε-greedy / 熵正则&quot;, style=dotted];
+}
+</code></pre>
+<p><strong>读图顺序</strong>：</p>
+<ol>
+<li><strong>蓝色起点</strong>：所有 RL 都是&quot;交互闭环&quot;</li>
+<li><strong>黄色 trick 层</strong>：让闭环 well-defined 的三块基石（马尔可夫性、累积奖励、探索权衡）</li>
+<li><strong>灰色三要素</strong>：智能体可能学的三种东西</li>
+<li><strong>绿色算法分支</strong>：按&quot;学什么 / 用不用模型&quot;分类的主流算法家族</li>
+<li><strong>红色 SOTA</strong>：现代 RL 的工程合流——AC + model-free（或 + model）+ 探索机制</li>
+</ol>
+<hr />
+<h2 id="十一、关联笔记">十一、关联笔记</h2>
+<ul>
+<li><span class="wikilink" data-target="马尔可夫决策过程教程" title="马尔可夫决策过程教程">马尔可夫决策过程</span> —— RL 的形式化基底，<span class="math math-inline">$\langle S,A,P,R,\gamma\rangle$</span> 五元组</li>
+<li><span class="wikilink" data-target="POMDP" title="POMDP">POMDP</span> —— 状态不可见时的 RL 框架，七元组 <span class="math math-inline">$\langle S,A,T,R,\Omega,O,\gamma\rangle$</span></li>
+<li><span class="wikilink" data-target="Bellman方程" title="Bellman方程">Bellman方程</span> —— 价值函数的递推关系，是几乎所有 value-based 算法的根</li>
+<li><span class="wikilink" data-target="Q-learning" title="Q-learning">Q-learning</span> —— 经典 off-policy value-based 算法，DQN 的前身</li>
+<li><span class="wikilink" data-target="Sarsa" title="Sarsa">Sarsa</span> —— Q-learning 的 on-policy 兄弟</li>
+<li><span class="wikilink" data-target="DQN教程" title="DQN教程">DQN</span> —— Deep Q-Network，深度 RL 的起点（Atari 突破）</li>
+<li><span class="wikilink" data-target="策略梯度教程" title="策略梯度教程">策略梯度</span> —— REINFORCE / PG，直接对 <span class="math math-inline">$\pi_\theta$</span> 求梯度</li>
+<li><span class="wikilink" data-target="Actor-Critic教程" title="Actor-Critic教程">Actor-Critic</span> —— 把 policy 和 value 缝合起来，方差更低</li>
+<li><span class="wikilink" data-target="PPO教程" title="PPO教程">PPO</span> —— 目前最常用的 on-policy 算法</li>
+<li><span class="wikilink" data-target="SAC" title="SAC">SAC</span> —— 连续动作 off-policy 的事实标准，带最大熵正则</li>
+<li><span class="wikilink" data-target="DDPG" title="DDPG">DDPG</span> —— 连续动作 deterministic policy gradient</li>
+<li><span class="wikilink" data-target="多臂赌博机" title="多臂赌博机">多臂赌博机</span> —— 探索利用的最简模型</li>
+<li><span class="wikilink" data-target="ε-greedy" title="ε-greedy">ε-greedy</span> —— 最简单的探索策略</li>
+<li>原文：<a href="https://datawhalechina.github.io/easy-rl/#/chapter1/chapter1" target="_blank" rel="noopener noreferrer">Easy-RL 第 1 章 · 强化学习基础</a></li>
+</ul>
+
+</main>
+</body>
+</html>
